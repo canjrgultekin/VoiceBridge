@@ -19,6 +19,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 {
     private readonly TranscriptManager _transcriptManager;
     private readonly IAudioCaptureService _audioCaptureService;
+    private readonly IApiKeyValidator _apiKeyValidator;
     private readonly IServiceProvider _serviceProvider;
     private readonly VoiceBridgeOptions _options;
     private readonly ILogger<MainViewModel> _logger;
@@ -38,26 +39,30 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(StopSessionCommand))]
     private bool _isSessionActive;
 
-    [ObservableProperty] private string _statusText = "Hazır — Başlamak için API key'lerinizi Ayarlar'dan girin";
+    [ObservableProperty] private string _statusText = "Başlatılıyor...";
     [ObservableProperty] private string _connectionState = "Bağlantı yok";
     [ObservableProperty] private AudioDeviceViewModel? _selectedMicrophone;
     [ObservableProperty] private SourceTypeOption? _selectedSourceType;
     [ObservableProperty] private int _speakerCount;
     [ObservableProperty] private int _entryCount;
     [ObservableProperty] private string _sessionDuration = "00:00:00";
+    [ObservableProperty] private bool _apiKeysValid;
 
     private DateTime _sessionStartTime;
     private System.Threading.Timer? _durationTimer;
+    private bool _disposed;
 
     public MainViewModel(
         TranscriptManager transcriptManager,
         IAudioCaptureService audioCaptureService,
+        IApiKeyValidator apiKeyValidator,
         IServiceProvider serviceProvider,
         IOptions<VoiceBridgeOptions> options,
         ILogger<MainViewModel> logger)
     {
         _transcriptManager = transcriptManager;
         _audioCaptureService = audioCaptureService;
+        _apiKeyValidator = apiKeyValidator;
         _serviceProvider = serviceProvider;
         _options = options.Value;
         _logger = logger;
@@ -68,18 +73,56 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _transcriptManager.EntryAdded += OnEntryAdded;
         _transcriptManager.TranslationCompleted += OnTranslationCompleted;
         _transcriptManager.StateChanged += OnStateChanged;
+        _transcriptManager.AudioDeviceChanged += OnAudioDeviceChanged;
 
         SelectedSourceType = SourceTypeOptions[0];
         LoadAudioDevices();
 
-        if (!string.IsNullOrEmpty(_options.Deepgram.ApiKey) && !string.IsNullOrEmpty(_options.DeepL.ApiKey))
-            StatusText = "Hazır";
+        // Startup'ta API key'leri doğrula (non-blocking)
+        _ = ValidateApiKeysOnStartupAsync();
+    }
+
+    private async Task ValidateApiKeysOnStartupAsync()
+    {
+        try
+        {
+            StatusText = "API key'ler doğrulanıyor...";
+
+            if (string.IsNullOrWhiteSpace(_options.Deepgram.ApiKey) ||
+                string.IsNullOrWhiteSpace(_options.DeepL.ApiKey))
+            {
+                await RunOnUiAsync(() =>
+                {
+                    ApiKeysValid = false;
+                    StatusText = "API key'ler eksik — Ayarlar'dan girin";
+                });
+                return;
+            }
+
+            var result = await _apiKeyValidator.ValidateAsync();
+
+            await RunOnUiAsync(() =>
+            {
+                ApiKeysValid = result.AllValid;
+                StatusText = result.BuildStatusMessage();
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Startup API key doğrulama hatası");
+            await RunOnUiAsync(() =>
+            {
+                ApiKeysValid = false;
+                StatusText = $"API key doğrulama hatası: {ex.Message}";
+            });
+        }
     }
 
     private void LoadAudioDevices()
     {
         try
         {
+            MicrophoneDevices.Clear();
             var devices = _audioCaptureService.GetAvailableDevices();
             foreach (var device in devices.Where(d => d.SourceType == AudioSourceType.Microphone))
             {
@@ -87,6 +130,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 MicrophoneDevices.Add(vm);
                 if (device.IsDefault) SelectedMicrophone = vm;
             }
+
+            if (SelectedMicrophone is null && MicrophoneDevices.Count > 0)
+                SelectedMicrophone = MicrophoneDevices[0];
         }
         catch (Exception ex)
         {
@@ -133,8 +179,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _durationTimer = new System.Threading.Timer(_ =>
             {
                 var elapsed = DateTime.Now - _sessionStartTime;
-                Application.Current?.Dispatcher.Invoke(() =>
-                    SessionDuration = elapsed.ToString(@"hh\:mm\:ss"));
+                _ = RunOnUiAsync(() => SessionDuration = elapsed.ToString(@"hh\:mm\:ss"));
             }, null, 0, 1000);
 
             StatusText = "Dinleniyor...";
@@ -193,8 +238,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
         };
         if (dialog.ShowDialog() == true)
         {
-            await _transcriptManager.ExportAsTextAsync(dialog.FileName);
-            StatusText = $"Dışa aktarıldı: {dialog.FileName}";
+            try
+            {
+                await _transcriptManager.ExportAsTextAsync(dialog.FileName);
+                StatusText = $"Dışa aktarıldı: {dialog.FileName}";
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Dışa aktarma hatası: {ex.Message}";
+                _logger.LogError(ex, "TXT export hatası");
+            }
         }
     }
 
@@ -208,8 +261,25 @@ public partial class MainViewModel : ObservableObject, IDisposable
         };
         if (dialog.ShowDialog() == true)
         {
-            await _transcriptManager.ExportAsSrtAsync(dialog.FileName);
-            StatusText = $"Dışa aktarıldı: {dialog.FileName}";
+            try
+            {
+                await _transcriptManager.ExportAsSrtAsync(dialog.FileName);
+                StatusText = $"Dışa aktarıldı: {dialog.FileName}";
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Dışa aktarma hatası: {ex.Message}";
+                _logger.LogError(ex, "SRT export hatası");
+            }
+        }
+    }
+
+    public async Task StopSessionIfActiveAsync()
+    {
+        if (IsSessionActive)
+        {
+            try { await _transcriptManager.StopSessionAsync(); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Shutdown sırasında session durdurma hatası"); }
         }
     }
 
@@ -240,7 +310,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             }
         }
 
-        Application.Current?.Dispatcher.Invoke(() =>
+        _ = RunOnUiAsync(() =>
         {
             EntryCount = Entries.Count(x => !x.IsInterim);
             SpeakerCount = _transcriptManager.Speakers.Count;
@@ -256,32 +326,74 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 entry.TranslatedText = e.TranslatedText;
                 entry.IsTranslationPending = false;
+                entry.IsTranslationFailed = !e.Success;
             }
         }
     }
 
     private void OnStateChanged(object? sender, SessionStateChangedEventArgs e)
     {
-        Application.Current?.Dispatcher.Invoke(() =>
+        _ = RunOnUiAsync(() =>
         {
             ConnectionState = e.NewState switch
             {
                 SessionState.Idle => "Bağlantı yok",
                 SessionState.Connecting => "Bağlanıyor...",
                 SessionState.Listening => "🟢 Bağlı - Dinleniyor",
+                SessionState.Reconnecting => "🟡 Yeniden bağlanıyor...",
                 SessionState.Error => "🔴 Hata",
                 SessionState.Disconnected => "Bağlantı kesildi",
                 _ => "Bilinmiyor"
             };
+
+            if (e.NewState == SessionState.Reconnecting)
+                StatusText = "Bağlantı koptu, yeniden bağlanılıyor...";
+            else if (e.NewState == SessionState.Listening && e.OldState == SessionState.Reconnecting)
+                StatusText = "Yeniden bağlandı — Dinleniyor";
         });
+    }
+
+    private void OnAudioDeviceChanged(object? sender, AudioDeviceChangedEventArgs e)
+    {
+        _ = RunOnUiAsync(() =>
+        {
+            // Cihaz listesini güncelle
+            LoadAudioDevices();
+
+            // Kullanımdaki cihaz etkilendiyse uyar
+            if (e.AffectsCurrentSession && IsSessionActive)
+            {
+                StatusText = e.ChangeType == AudioDeviceChangeType.Removed
+                    ? $"⚠️ Kullanılan mikrofon çıkarıldı ({e.DeviceName}) — Session durdurulmalı"
+                    : $"⚠️ Mikrofon durumu değişti: {e.DeviceName}";
+
+                _logger.LogWarning("Aktif session'u etkileyen cihaz değişikliği: {Change} - {Device}",
+                    e.ChangeType, e.DeviceName);
+            }
+        });
+    }
+
+    private static Task RunOnUiAsync(Action action)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            action();
+            return Task.CompletedTask;
+        }
+        return dispatcher.InvokeAsync(action).Task;
     }
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
+
         _durationTimer?.Dispose();
         _transcriptManager.EntryAdded -= OnEntryAdded;
         _transcriptManager.TranslationCompleted -= OnTranslationCompleted;
         _transcriptManager.StateChanged -= OnStateChanged;
+        _transcriptManager.AudioDeviceChanged -= OnAudioDeviceChanged;
     }
 }
 
@@ -294,6 +406,7 @@ public partial class TranscriptEntryViewModel : ObservableObject
     [ObservableProperty] private string _translatedText;
     [ObservableProperty] private bool _isInterim;
     [ObservableProperty] private bool _isTranslationPending;
+    [ObservableProperty] private bool _isTranslationFailed;
     [ObservableProperty] private string _languageFlag;
     [ObservableProperty] private string _speakerLabel;
     [ObservableProperty] private string _timestamp;
@@ -307,6 +420,7 @@ public partial class TranscriptEntryViewModel : ObservableObject
         _translatedText = entry.TranslatedText;
         _isInterim = entry.IsInterim;
         _isTranslationPending = entry.IsTranslationPending;
+        _isTranslationFailed = entry.IsTranslationFailed;
         _language = entry.Language;
         _languageFlag = entry.Language == DetectedLanguage.Turkish ? "🇹🇷" : "🇬🇧";
         _speakerLabel = entry.SpeakerLabel;

@@ -25,6 +25,15 @@ public enum SessionState
     Idle,
     Connecting,
     Listening,
+    Reconnecting,
     Error,
     Disconnected
+}
+
+public enum AudioDeviceChangeType
+{
+    Added,
+    Removed,
+    StateChanged,
+    DefaultChanged
 }

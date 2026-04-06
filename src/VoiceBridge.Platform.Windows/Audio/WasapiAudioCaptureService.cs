@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Wave;
 using VoiceBridge.Core.Events;
 using VoiceBridge.Core.Interfaces;
@@ -7,22 +8,39 @@ using VoiceBridge.Core.Models;
 
 namespace VoiceBridge.Platform.Windows.Audio;
 
-public sealed class WasapiAudioCaptureService : IAudioCaptureService
+public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotificationClient
 {
     private readonly ILogger<WasapiAudioCaptureService> _logger;
+    private readonly MMDeviceEnumerator _enumerator;
     private WasapiCapture? _micCapture;
     private WasapiLoopbackCapture? _loopbackCapture;
     private WaveFormat? _targetFormat;
     private bool _isCapturing;
+    private string? _currentDeviceId;
+    private bool _notificationsRegistered;
 
     public event EventHandler<AudioDataEventArgs>? AudioDataAvailable;
     public event EventHandler<AudioCaptureErrorEventArgs>? CaptureError;
+    public event EventHandler<AudioDeviceChangedEventArgs>? DeviceChanged;
 
     public bool IsCapturing => _isCapturing;
+    public string? CurrentDeviceId => _currentDeviceId;
 
     public WasapiAudioCaptureService(ILogger<WasapiAudioCaptureService> logger)
     {
         _logger = logger;
+        _enumerator = new MMDeviceEnumerator();
+
+        try
+        {
+            _enumerator.RegisterEndpointNotificationCallback(this);
+            _notificationsRegistered = true;
+            _logger.LogInformation("Ses cihazı bildirimleri kaydedildi");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Device notification callback kaydedilemedi");
+        }
     }
 
     public IReadOnlyList<AudioDeviceInfo> GetAvailableDevices()
@@ -31,10 +49,8 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService
 
         try
         {
-            var enumerator = new MMDeviceEnumerator();
-
-            var captureDevices = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
-            var defaultCapture = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+            var captureDevices = _enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
+            var defaultCapture = _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
 
             foreach (var device in captureDevices)
             {
@@ -43,8 +59,8 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService
                     device.ID == defaultCapture.ID, AudioSourceType.Microphone));
             }
 
-            var renderDevices = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
-            var defaultRender = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            var renderDevices = _enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+            var defaultRender = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
 
             foreach (var device in renderDevices)
             {
@@ -95,10 +111,11 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService
 
     private void StartMicrophoneCapture(string? deviceId)
     {
-        var enumerator = new MMDeviceEnumerator();
         var device = string.IsNullOrEmpty(deviceId)
-            ? enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications)
-            : enumerator.GetDevice(deviceId);
+            ? _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications)
+            : _enumerator.GetDevice(deviceId);
+
+        _currentDeviceId = device.ID;
 
         _micCapture = new WasapiCapture(device)
         {
@@ -108,7 +125,8 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService
         _micCapture.DataAvailable += OnMicDataAvailable;
         _micCapture.RecordingStopped += OnRecordingStopped;
         _micCapture.StartRecording();
-        _logger.LogInformation("Mikrofon yakalama başlatıldı: {Device}", device.FriendlyName);
+        _logger.LogInformation("Mikrofon yakalama başlatıldı: {Device} ({Id})",
+            device.FriendlyName, device.ID);
     }
 
     private void StartLoopbackCapture()
@@ -165,7 +183,6 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService
             return new ReadOnlyMemory<byte>(buffer, 0, bytesRecorded);
         }
 
-        // Stereo veya float format ise önce mono int16'ya çevir
         if (sourceFormat.Channels > 1 ||
             (sourceFormat.BitsPerSample == 32 && sourceFormat.Encoding == WaveFormatEncoding.IeeeFloat))
         {
@@ -207,7 +224,6 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService
             return monoBytes;
         }
 
-        // Mono ama farklı sample rate
         if (sourceFormat.SampleRate != _targetFormat.SampleRate)
             return ResampleAudio(buffer.AsSpan(0, bytesRecorded).ToArray(), sourceFormat);
 
@@ -241,19 +257,128 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService
 
     public Task StopCaptureAsync(CancellationToken ct = default)
     {
-        _micCapture?.StopRecording();
-        _loopbackCapture?.StopRecording();
+        try { _micCapture?.StopRecording(); } catch { }
+        try { _loopbackCapture?.StopRecording(); } catch { }
         _isCapturing = false;
+        _currentDeviceId = null;
         _logger.LogInformation("Ses yakalama durduruldu");
         return Task.CompletedTask;
     }
 
+    // IMMNotificationClient — Windows ses alt sisteminden bildirimleri yakalar
+    // Bu metodlar COM thread'inden çağrılır, UI thread değil
+
+    public void OnDeviceStateChanged(string deviceId, DeviceState newState)
+    {
+        try
+        {
+            var device = _enumerator.GetDevice(deviceId);
+            var name = device.FriendlyName;
+            var affects = _isCapturing && deviceId == _currentDeviceId && newState != DeviceState.Active;
+
+            _logger.LogInformation("Cihaz durum değişti: {Name} -> {State} (Etkiler: {Affects})",
+                name, newState, affects);
+
+            DeviceChanged?.Invoke(this, new AudioDeviceChangedEventArgs
+            {
+                DeviceId = deviceId,
+                DeviceName = name,
+                ChangeType = AudioDeviceChangeType.StateChanged,
+                AffectsCurrentSession = affects
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "OnDeviceStateChanged hata");
+        }
+    }
+
+    public void OnDeviceAdded(string pwstrDeviceId)
+    {
+        try
+        {
+            var device = _enumerator.GetDevice(pwstrDeviceId);
+            DeviceChanged?.Invoke(this, new AudioDeviceChangedEventArgs
+            {
+                DeviceId = pwstrDeviceId,
+                DeviceName = device.FriendlyName,
+                ChangeType = AudioDeviceChangeType.Added,
+                AffectsCurrentSession = false
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "OnDeviceAdded hata");
+        }
+    }
+
+    public void OnDeviceRemoved(string deviceId)
+    {
+        var affects = _isCapturing && deviceId == _currentDeviceId;
+        _logger.LogInformation("Cihaz kaldırıldı: {Id} (Etkiler: {Affects})", deviceId, affects);
+
+        DeviceChanged?.Invoke(this, new AudioDeviceChangedEventArgs
+        {
+            DeviceId = deviceId,
+            DeviceName = "(kaldırılmış cihaz)",
+            ChangeType = AudioDeviceChangeType.Removed,
+            AffectsCurrentSession = affects
+        });
+    }
+
+    public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
+    {
+        if (flow != DataFlow.Capture || role != Role.Communications)
+            return;
+
+        if (string.IsNullOrEmpty(defaultDeviceId))
+            return;
+
+        try
+        {
+            var device = _enumerator.GetDevice(defaultDeviceId);
+            _logger.LogInformation("Varsayılan mikrofon değişti: {Name}", device.FriendlyName);
+
+            DeviceChanged?.Invoke(this, new AudioDeviceChangedEventArgs
+            {
+                DeviceId = defaultDeviceId,
+                DeviceName = device.FriendlyName,
+                ChangeType = AudioDeviceChangeType.DefaultChanged,
+                AffectsCurrentSession = false
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "OnDefaultDeviceChanged hata");
+        }
+    }
+
+    public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key)
+    {
+        // Property değişiklikleri (volume vs.) bizim için önemli değil
+    }
+
     public ValueTask DisposeAsync()
     {
-        _micCapture?.StopRecording();
-        _micCapture?.Dispose();
-        _loopbackCapture?.StopRecording();
-        _loopbackCapture?.Dispose();
+        try { _micCapture?.StopRecording(); } catch { }
+        try { _micCapture?.Dispose(); } catch { }
+        try { _loopbackCapture?.StopRecording(); } catch { }
+        try { _loopbackCapture?.Dispose(); } catch { }
+
+        if (_notificationsRegistered)
+        {
+            try
+            {
+                _enumerator.UnregisterEndpointNotificationCallback(this);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Notification callback unregister hata");
+            }
+        }
+
+        try { _enumerator.Dispose(); } catch { }
+
         _isCapturing = false;
         return ValueTask.CompletedTask;
     }

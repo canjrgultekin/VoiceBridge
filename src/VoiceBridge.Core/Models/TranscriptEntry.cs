@@ -11,6 +11,7 @@ public sealed class TranscriptEntry
     public string TranslatedText { get; set; } = string.Empty;
     public bool IsInterim { get; init; }
     public bool IsTranslationPending { get; set; }
+    public bool IsTranslationFailed { get; set; }
     public double Confidence { get; init; }
     public double StartTime { get; init; }
     public double EndTime { get; init; }

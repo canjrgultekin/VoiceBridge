@@ -14,6 +14,14 @@ public sealed class AudioCaptureErrorEventArgs : EventArgs
     public Exception? Exception { get; init; }
 }
 
+public sealed class AudioDeviceChangedEventArgs : EventArgs
+{
+    public required string DeviceId { get; init; }
+    public required string DeviceName { get; init; }
+    public required AudioDeviceChangeType ChangeType { get; init; }
+    public required bool AffectsCurrentSession { get; init; }
+}
+
 public sealed class TranscriptReceivedEventArgs : EventArgs
 {
     public required TranscriptEntry Entry { get; init; }
@@ -35,4 +43,6 @@ public sealed class TranslationCompletedEventArgs : EventArgs
 {
     public required string EntryId { get; init; }
     public required string TranslatedText { get; init; }
+    public bool Success { get; init; } = true;
+    public string? ErrorMessage { get; init; }
 }

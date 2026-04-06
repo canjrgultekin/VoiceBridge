@@ -6,11 +6,13 @@ public interface IAudioCaptureService : IAsyncDisposable
 {
     event EventHandler<AudioDataEventArgs>? AudioDataAvailable;
     event EventHandler<AudioCaptureErrorEventArgs>? CaptureError;
+    event EventHandler<AudioDeviceChangedEventArgs>? DeviceChanged;
 
     IReadOnlyList<AudioDeviceInfo> GetAvailableDevices();
     Task StartCaptureAsync(AudioCaptureRequest request, CancellationToken ct = default);
     Task StopCaptureAsync(CancellationToken ct = default);
     bool IsCapturing { get; }
+    string? CurrentDeviceId { get; }
 }
 
 public sealed record AudioCaptureRequest(

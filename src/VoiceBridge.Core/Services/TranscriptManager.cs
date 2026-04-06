@@ -25,10 +25,12 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
 
     private CancellationTokenSource? _sessionCts;
     private Task? _translationWorker;
+    private bool _disposed;
 
     public event EventHandler<TranscriptReceivedEventArgs>? EntryAdded;
     public event EventHandler<TranslationCompletedEventArgs>? TranslationCompleted;
     public event EventHandler<SessionStateChangedEventArgs>? StateChanged;
+    public event EventHandler<AudioDeviceChangedEventArgs>? AudioDeviceChanged;
 
     public IReadOnlyList<TranscriptEntry> Entries
     {
@@ -58,6 +60,7 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
         _stt.StateChanged += OnStateChanged;
         _audio.AudioDataAvailable += OnAudioDataAvailable;
         _audio.CaptureError += OnCaptureError;
+        _audio.DeviceChanged += OnAudioDeviceChanged;
     }
 
     public async Task StartSessionAsync(
@@ -66,13 +69,10 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
     {
         _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
-        // Deepgram'a bağlan
         await _stt.ConnectAsync(_sessionCts.Token);
 
-        // Çeviri worker'ı başlat
         _translationWorker = RunTranslationWorkerAsync(_sessionCts.Token);
 
-        // Ses yakalamayı başlat
         await _audio.StartCaptureAsync(captureRequest, _sessionCts.Token);
 
         _logger.LogInformation("Session başlatıldı: {SourceType}", captureRequest.SourceType);
@@ -82,8 +82,11 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
     {
         _logger.LogInformation("Session durduruluyor...");
 
-        await _audio.StopCaptureAsync(ct);
-        await _stt.DisconnectAsync(ct);
+        try { await _audio.StopCaptureAsync(ct); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Audio stop hatası"); }
+
+        try { await _stt.DisconnectAsync(ct); }
+        catch (Exception ex) { _logger.LogWarning(ex, "STT disconnect hatası"); }
 
         _sessionCts?.Cancel();
 
@@ -91,7 +94,12 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
         {
             try { await _translationWorker; }
             catch (OperationCanceledException) { }
+            catch (Exception ex) { _logger.LogWarning(ex, "Translation worker durma hatası"); }
         }
+
+        _sessionCts?.Dispose();
+        _sessionCts = null;
+        _translationWorker = null;
 
         _logger.LogInformation("Session durduruldu");
     }
@@ -116,7 +124,6 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
         {
             if (entry.IsInterim)
             {
-                // Interim: son interim'i güncelle veya ekle
                 var existing = _entries.FindLastIndex(x =>
                     x.IsInterim && x.SpeakerIndex == entry.SpeakerIndex);
 
@@ -127,13 +134,11 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
             }
             else
             {
-                // Final: interim'leri kaldır, final ekle
                 _entries.RemoveAll(x =>
                     x.IsInterim && x.SpeakerIndex == entry.SpeakerIndex);
                 _entries.Add(entry);
             }
 
-            // Speaker bilgisini güncelle
             if (!_speakers.TryGetValue(entry.SpeakerIndex, out var speaker))
             {
                 speaker = new SpeakerInfo { Index = entry.SpeakerIndex };
@@ -149,11 +154,8 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
 
         EntryAdded?.Invoke(this, e);
 
-        // Final transcript'i çeviri kuyruğuna ekle
         if (!entry.IsInterim && _translationOptions.AutoTranslate)
-        {
             _translationQueue.Enqueue(entry);
-        }
     }
 
     private async Task RunTranslationWorkerAsync(CancellationToken ct)
@@ -183,22 +185,37 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
 
                 foreach (var result in results)
                 {
-                    if (!result.Success) continue;
-
-                    UpdateTranslation(result.Id, result.TranslatedText);
-
-                    TranslationCompleted?.Invoke(this, new TranslationCompletedEventArgs
+                    // Başarılı olsa da olmasa da UI'a bildir ki "çevriliyor..." kalmasın
+                    if (result.Success)
                     {
-                        EntryId = result.Id,
-                        TranslatedText = result.TranslatedText
-                    });
+                        UpdateTranslation(result.Id, result.TranslatedText, failed: false);
+                        TranslationCompleted?.Invoke(this, new TranslationCompletedEventArgs
+                        {
+                            EntryId = result.Id,
+                            TranslatedText = result.TranslatedText,
+                            Success = true
+                        });
+                    }
+                    else
+                    {
+                        var errorMsg = $"⚠️ Çeviri başarısız: {result.ErrorMessage}";
+                        UpdateTranslation(result.Id, errorMsg, failed: true);
+                        TranslationCompleted?.Invoke(this, new TranslationCompletedEventArgs
+                        {
+                            EntryId = result.Id,
+                            TranslatedText = errorMsg,
+                            Success = false,
+                            ErrorMessage = result.ErrorMessage
+                        });
+                    }
                 }
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Çeviri worker hatası");
-                await Task.Delay(1000, ct);
+                try { await Task.Delay(1000, ct); }
+                catch (OperationCanceledException) { break; }
             }
         }
 
@@ -221,6 +238,13 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
         _logger.LogError(e.Exception, "Ses yakalama hatası: {Message}", e.Message);
     }
 
+    private void OnAudioDeviceChanged(object? sender, AudioDeviceChangedEventArgs e)
+    {
+        _logger.LogInformation("Ses cihazı değişikliği: {Change} - {Device} (Etkiler: {Affects})",
+            e.ChangeType, e.DeviceName, e.AffectsCurrentSession);
+        AudioDeviceChanged?.Invoke(this, e);
+    }
+
     public void AddOrUpdateEntry(TranscriptEntry entry)
     {
         lock (_lock)
@@ -234,6 +258,9 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
     }
 
     public void UpdateTranslation(string entryId, string translatedText)
+        => UpdateTranslation(entryId, translatedText, failed: false);
+
+    private void UpdateTranslation(string entryId, string translatedText, bool failed)
     {
         lock (_lock)
         {
@@ -242,6 +269,7 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
             {
                 entry.TranslatedText = translatedText;
                 entry.IsTranslationPending = false;
+                entry.IsTranslationFailed = failed;
             }
         }
     }
@@ -270,11 +298,13 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
             sb.AppendLine();
             sb.AppendLine($"[{entry.Timestamp:HH:mm:ss}] {entry.SpeakerLabel} {langFlag}");
             sb.AppendLine($"  {entry.OriginalText}");
-            if (!string.IsNullOrEmpty(entry.TranslatedText))
+            if (!string.IsNullOrEmpty(entry.TranslatedText) && !entry.IsTranslationFailed)
                 sb.AppendLine($"  → {entry.TranslatedText}");
         }
 
         await File.WriteAllTextAsync(filePath, sb.ToString(), Encoding.UTF8, ct);
+        _logger.LogInformation("Transcript TXT olarak dışa aktarıldı: {Path} ({Count} kayıt)",
+            filePath, snapshot.Count);
     }
 
     public async Task ExportAsSrtAsync(string filePath, CancellationToken ct = default)
@@ -289,12 +319,14 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
             sb.AppendLine($"{i + 1}");
             sb.AppendLine($"{FormatSrtTime(e.StartTime)} --> {FormatSrtTime(e.EndTime)}");
             sb.AppendLine($"[{e.SpeakerLabel}] {e.OriginalText}");
-            if (!string.IsNullOrEmpty(e.TranslatedText))
+            if (!string.IsNullOrEmpty(e.TranslatedText) && !e.IsTranslationFailed)
                 sb.AppendLine(e.TranslatedText);
             sb.AppendLine();
         }
 
         await File.WriteAllTextAsync(filePath, sb.ToString(), Encoding.UTF8, ct);
+        _logger.LogInformation("Transcript SRT olarak dışa aktarıldı: {Path} ({Count} kayıt)",
+            filePath, snapshot.Count);
     }
 
     public async Task ExportAsJsonAsync(string filePath, CancellationToken ct = default)
@@ -309,6 +341,8 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
         });
 
         await File.WriteAllTextAsync(filePath, json, Encoding.UTF8, ct);
+        _logger.LogInformation("Transcript JSON olarak dışa aktarıldı: {Path} ({Count} kayıt)",
+            filePath, snapshot.Count);
     }
 
     private static string FormatSrtTime(double seconds)
@@ -319,18 +353,17 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
+        _disposed = true;
+
+        try { await StopSessionAsync(); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Dispose sırasında session durdurma hatası"); }
+
         _stt.TranscriptReceived -= OnTranscriptReceived;
         _stt.RecognitionError -= OnRecognitionError;
         _stt.StateChanged -= OnStateChanged;
         _audio.AudioDataAvailable -= OnAudioDataAvailable;
         _audio.CaptureError -= OnCaptureError;
-
-        _sessionCts?.Cancel();
-
-        if (_translationWorker is not null)
-        {
-            try { await _translationWorker; }
-            catch (OperationCanceledException) { }
-        }
+        _audio.DeviceChanged -= OnAudioDeviceChanged;
     }
 }
