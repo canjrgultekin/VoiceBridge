@@ -1,11 +1,29 @@
 <Window x:Class="VoiceBridge.App.Desktop.Views.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:sys="clr-namespace:System;assembly=mscorlib"
         Title="VoiceBridge — Ayarlar"
         Height="520" Width="550"
         Background="{StaticResource BgBrush}"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize">
+
+    <Window.Resources>
+        <x:Array x:Key="DeepgramModels" Type="{x:Type sys:String}">
+            <sys:String>nova-3</sys:String>
+            <sys:String>nova-3-general</sys:String>
+            <sys:String>nova-3-meeting</sys:String>
+        </x:Array>
+        <x:Array x:Key="DeepLModelTypes" Type="{x:Type sys:String}">
+            <sys:String>latency_optimized</sys:String>
+            <sys:String>quality_optimized</sys:String>
+        </x:Array>
+        <x:Array x:Key="Formalities" Type="{x:Type sys:String}">
+            <sys:String>default</sys:String>
+            <sys:String>more</sys:String>
+            <sys:String>less</sys:String>
+        </x:Array>
+    </Window.Resources>
 
     <Grid Margin="24">
         <Grid.RowDefinitions>
@@ -18,11 +36,10 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Header -->
         <TextBlock Grid.Row="0" Text="⚙️  API Ayarları" FontSize="20" FontWeight="Bold"
                    Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,20"/>
 
-        <!-- Deepgram Section -->
+        <!-- Deepgram -->
         <StackPanel Grid.Row="1" Margin="0,0,0,16">
             <TextBlock Text="Deepgram API Key" FontSize="13" FontWeight="SemiBold"
                        Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
@@ -34,15 +51,12 @@
 
             <TextBlock Text="Model" FontSize="13" FontWeight="SemiBold"
                        Foreground="{StaticResource TextSecondaryBrush}" Margin="0,10,0,6"/>
-            <ComboBox SelectedItem="{Binding DeepgramModel}" IsEditable="True" Width="200"
-                      HorizontalAlignment="Left">
-                <ComboBoxItem Content="nova-3"/>
-                <ComboBoxItem Content="nova-3-general"/>
-                <ComboBoxItem Content="nova-3-meeting"/>
-            </ComboBox>
+            <ComboBox ItemsSource="{StaticResource DeepgramModels}"
+                      SelectedItem="{Binding DeepgramModel}"
+                      IsEditable="True" Width="200" HorizontalAlignment="Left"/>
         </StackPanel>
 
-        <!-- DeepL Section -->
+        <!-- DeepL -->
         <StackPanel Grid.Row="2" Margin="0,0,0,16">
             <TextBlock Text="DeepL API Key" FontSize="13" FontWeight="SemiBold"
                        Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
@@ -61,25 +75,20 @@
                 <StackPanel Grid.Column="0" Margin="0,0,8,0">
                     <TextBlock Text="Çeviri Modu" FontSize="13" FontWeight="SemiBold"
                                Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
-                    <ComboBox SelectedItem="{Binding DeepLModelType}" IsEditable="True">
-                        <ComboBoxItem Content="latency_optimized"/>
-                        <ComboBoxItem Content="quality_optimized"/>
-                    </ComboBox>
+                    <ComboBox ItemsSource="{StaticResource DeepLModelTypes}"
+                              SelectedItem="{Binding DeepLModelType}"/>
                 </StackPanel>
 
                 <StackPanel Grid.Column="1" Margin="8,0,0,0">
                     <TextBlock Text="Formalite" FontSize="13" FontWeight="SemiBold"
                                Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
-                    <ComboBox SelectedItem="{Binding DeepLFormality}" IsEditable="True">
-                        <ComboBoxItem Content="default"/>
-                        <ComboBoxItem Content="more"/>
-                        <ComboBoxItem Content="less"/>
-                    </ComboBox>
+                    <ComboBox ItemsSource="{StaticResource Formalities}"
+                              SelectedItem="{Binding DeepLFormality}"/>
                 </StackPanel>
             </Grid>
         </StackPanel>
 
-        <!-- Translation Section -->
+        <!-- Translation -->
         <StackPanel Grid.Row="3" Margin="0,0,0,16">
             <CheckBox IsChecked="{Binding AutoTranslate}" Margin="0,0,0,4">
                 <TextBlock Text="Otomatik çeviri" FontSize="13"

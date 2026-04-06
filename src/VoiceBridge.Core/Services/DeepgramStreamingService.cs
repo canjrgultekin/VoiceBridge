@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -20,12 +19,6 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveTask;
     private SessionState _currentState = SessionState.Idle;
-
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-    };
 
     public event EventHandler<TranscriptReceivedEventArgs>? TranscriptReceived;
     public event EventHandler<SpeechRecognitionErrorEventArgs>? RecognitionError;
@@ -100,14 +93,12 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
 
         try
         {
-            // Deepgram'a kapanış sinyali gönder
             if (_ws.State == WebSocketState.Open)
             {
                 var closeMsg = JsonSerializer.SerializeToUtf8Bytes(
                     new { type = "CloseStream" });
                 await _ws.SendAsync(closeMsg, WebSocketMessageType.Text, true, ct);
 
-                // Graceful close bekle
                 using var closeCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
                 try
                 {
@@ -227,17 +218,12 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
         var isFinal = root.GetProperty("is_final").GetBoolean();
         var confidence = best.GetProperty("confidence").GetDouble();
 
-        // Dil tespiti
+        // Dil tespiti - channel seviyesinde
         var detectedLang = DetectedLanguage.Unknown;
         if (channel.TryGetProperty("detected_language", out var langProp))
         {
             var langCode = langProp.GetString();
-            detectedLang = langCode switch
-            {
-                "tr" => DetectedLanguage.Turkish,
-                "en" => DetectedLanguage.English,
-                _ => DetectedLanguage.Unknown
-            };
+            detectedLang = ParseLanguageCode(langCode);
         }
 
         // Speaker diarization
@@ -254,21 +240,13 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
             endTime = lastWord.GetProperty("end").GetDouble();
 
             if (firstWord.TryGetProperty("speaker", out var speakerProp))
-            {
                 speakerIndex = speakerProp.GetInt32();
-            }
 
-            // Kelime bazlı dil tespiti (eğer channel seviyesinde yoksa)
+            // Kelime bazlı dil tespiti (channel seviyesinde yoksa)
             if (detectedLang == DetectedLanguage.Unknown &&
                 firstWord.TryGetProperty("language", out var wordLangProp))
             {
-                var wLang = wordLangProp.GetString();
-                detectedLang = wLang switch
-                {
-                    "tr" => DetectedLanguage.Turkish,
-                    "en" => DetectedLanguage.English,
-                    _ => DetectedLanguage.Unknown
-                };
+                detectedLang = ParseLanguageCode(wordLangProp.GetString());
             }
         }
 
@@ -287,33 +265,44 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
         TranscriptReceived?.Invoke(this, new TranscriptReceivedEventArgs { Entry = entry });
     }
 
+    private static DetectedLanguage ParseLanguageCode(string? code) => code switch
+    {
+        "tr" => DetectedLanguage.Turkish,
+        "en" => DetectedLanguage.English,
+        _ => DetectedLanguage.Unknown
+    };
+
     private Uri BuildConnectionUri()
     {
         var queryParams = new Dictionary<string, string>
         {
             ["model"] = _options.Model,
-            ["diarize"] = _options.Diarize.ToString().ToLower(),
-            ["smart_format"] = _options.SmartFormat.ToString().ToLower(),
-            ["punctuate"] = _options.Punctuate.ToString().ToLower(),
-            ["interim_results"] = _options.InterimResults.ToString().ToLower(),
-            ["utterance_end_ms"] = _options.UtteranceEndMs.ToString(),
+            ["language"] = _options.Language,
             ["sample_rate"] = _options.SampleRate.ToString(),
             ["encoding"] = _options.Encoding,
-            ["channels"] = _options.Channels.ToString()
+            ["channels"] = _options.Channels.ToString(),
+            ["smart_format"] = _options.SmartFormat.ToString().ToLower(),
+            ["punctuate"] = _options.Punctuate.ToString().ToLower(),
+            ["diarize"] = _options.Diarize.ToString().ToLower(),
+            ["interim_results"] = _options.InterimResults.ToString().ToLower()
         };
 
+        // Multilingual code-switching için endpointing=100 öneriliyor
         if (_options.Language == "multi")
         {
-            queryParams["language"] = "multi";
-            queryParams["detect_language"] = "true";
-        }
-        else
-        {
-            queryParams["language"] = _options.Language;
-            queryParams["detect_language"] = _options.DetectLanguage.ToString().ToLower();
+            queryParams["endpointing"] = "100";
         }
 
-        var qs = string.Join("&", queryParams.Select(kv => $"{kv.Key}={kv.Value}"));
+        // utterance_end sadece streaming'de, endpointing ile birlikte
+        if (_options.UtteranceEnd)
+        {
+            queryParams["utterance_end_ms"] = _options.UtteranceEndMs.ToString();
+        }
+
+        // NOT: detect_language streaming'de desteklenmiyor
+        // language=multi zaten otomatik dil tespiti yapıyor
+
+        var qs = string.Join("&", queryParams.Select(kv => $"{kv.Key}={Uri.EscapeDataString(kv.Value)}"));
         return new Uri($"wss://api.deepgram.com/v1/listen?{qs}");
     }
 
