@@ -28,12 +28,18 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
     private Task? _retryTask;
     private bool _isRetrying;
 
+    // Ses seviyesi metering için throttling
+    private DateTime _lastMicLevelEmit = DateTime.MinValue;
+    private DateTime _lastLoopbackLevelEmit = DateTime.MinValue;
+    private const int LevelEmitIntervalMs = 50;  // 20 Hz update
+
     private const int RetryIntervalMs = 2000;
-    private const int MaxRetryAttempts = 60;  // ~2 dakika
+    private const int MaxRetryAttempts = 60;
 
     public event EventHandler<AudioDataEventArgs>? AudioDataAvailable;
     public event EventHandler<AudioCaptureErrorEventArgs>? CaptureError;
     public event EventHandler<AudioDeviceChangedEventArgs>? DeviceChanged;
+    public event EventHandler<AudioLevelEventArgs>? AudioLevelChanged;
 
     public bool IsCapturing => _isCapturing;
     public string? CurrentDeviceId => _currentDeviceId;
@@ -170,6 +176,9 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
                 Buffer = converted,
                 SourceType = AudioSourceType.Microphone
             });
+
+            // Ses seviyesi (throttled)
+            EmitLevelIfDue(converted, AudioSourceType.Microphone, ref _lastMicLevelEmit);
         }
         catch (Exception ex)
         {
@@ -188,11 +197,53 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
                 Buffer = converted,
                 SourceType = AudioSourceType.SystemAudio
             });
+
+            EmitLevelIfDue(converted, AudioSourceType.SystemAudio, ref _lastLoopbackLevelEmit);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Loopback veri dönüşüm hatası");
         }
+    }
+
+    private void EmitLevelIfDue(ReadOnlyMemory<byte> pcm16Buffer, AudioSourceType source, ref DateTime lastEmit)
+    {
+        var now = DateTime.UtcNow;
+        if ((now - lastEmit).TotalMilliseconds < LevelEmitIntervalMs)
+            return;
+
+        lastEmit = now;
+
+        var (peak, rms) = CalculateLevels(pcm16Buffer.Span);
+
+        AudioLevelChanged?.Invoke(this, new AudioLevelEventArgs
+        {
+            Peak = peak,
+            Rms = rms,
+            SourceType = source
+        });
+    }
+
+    private static (double Peak, double Rms) CalculateLevels(ReadOnlySpan<byte> pcm16)
+    {
+        if (pcm16.Length < 2) return (0, 0);
+
+        int sampleCount = pcm16.Length / 2;
+        double sumSquares = 0;
+        int peakRaw = 0;
+
+        for (int i = 0; i < sampleCount; i++)
+        {
+            short sample = (short)(pcm16[i * 2] | (pcm16[i * 2 + 1] << 8));
+            int abs = sample < 0 ? -sample : sample;
+            if (abs > peakRaw) peakRaw = abs;
+            sumSquares += sample * sample;
+        }
+
+        double rms = Math.Sqrt(sumSquares / sampleCount) / 32768.0;
+        double peak = peakRaw / 32768.0;
+
+        return (Math.Min(1.0, peak), Math.Min(1.0, rms));
     }
 
     private ReadOnlyMemory<byte> ConvertAudio(byte[] buffer, int bytesRecorded, WaveFormat sourceFormat)
@@ -267,14 +318,10 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
         var source = sender == _micCapture ? "Mikrofon" : "Sistem sesi";
 
         if (e.Exception is null)
-        {
-            // Düzgün kapanış (Stop çağrıldı)
             return;
-        }
 
         _logger.LogWarning(e.Exception, "{Source} kaydı beklenmedik şekilde durdu", source);
 
-        // Sadece kullanıcı hala capture istiyorsa retry başlat
         if (_shouldBeCapturing && _lastRequest is not null)
         {
             _isCapturing = false;
@@ -330,16 +377,13 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
 
                 try
                 {
-                    // Eski capture'ları temizle
                     DisposeCaptures();
 
-                    // Yeniden başlat
                     StartCaptureInternal(request);
                     _isCapturing = true;
 
                     _logger.LogInformation("Ses yakalama yeniden bağlandı (deneme {Attempt})", attempt);
 
-                    // UI'a bildir: cihaz tekrar aktif
                     DeviceChanged?.Invoke(this, new AudioDeviceChangedEventArgs
                     {
                         DeviceId = _currentDeviceId ?? string.Empty,
@@ -392,12 +436,20 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
 
         _isCapturing = false;
         _currentDeviceId = null;
+
+        // Seviye metresini sıfırla
+        AudioLevelChanged?.Invoke(this, new AudioLevelEventArgs
+        {
+            Peak = 0,
+            Rms = 0,
+            SourceType = AudioSourceType.Microphone
+        });
+
         _logger.LogInformation("Ses yakalama durduruldu");
         return Task.CompletedTask;
     }
 
-    // IMMNotificationClient — Windows ses alt sisteminden bildirimleri yakalar
-    // Bu metodlar COM thread'inden çağrılır
+    // IMMNotificationClient
 
     public void OnDeviceStateChanged(string deviceId, DeviceState newState)
     {
@@ -410,14 +462,6 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
             _logger.LogInformation("Cihaz durum değişti: {Name} -> {State} (Etkiler: {Affects})",
                 name, newState, affects);
 
-            // Eğer kullandığımız cihaz tekrar Active olduysa retry'ı hemen tetikle
-            if (affects && newState == DeviceState.Active && _isRetrying)
-            {
-                _logger.LogInformation("Kullanılan cihaz tekrar aktif, retry hemen tetikleniyor");
-                // Retry loop zaten döndüğü için bir sonraki iterasyonda yakalayacak
-            }
-
-            // Cihaz çıkarıldı/disabled olduysa ve kullanıyorsak retry başlat
             if (affects && newState != DeviceState.Active && _isCapturing)
             {
                 _logger.LogWarning("Kullanılan cihaz devre dışı bırakıldı, retry başlatılıyor");
@@ -509,7 +553,6 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
 
     public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key)
     {
-        // Property değişiklikleri (volume vs.) bizim için önemli değil
     }
 
     public ValueTask DisposeAsync()

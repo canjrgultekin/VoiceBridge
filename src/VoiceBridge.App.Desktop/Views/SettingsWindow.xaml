@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:sys="clr-namespace:System;assembly=mscorlib"
         Title="VoiceBridge — Ayarlar"
-        Height="520" Width="550"
+        Height="640" Width="600"
         Background="{StaticResource BgBrush}"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize">
@@ -13,6 +13,13 @@
             <sys:String>nova-3</sys:String>
             <sys:String>nova-3-general</sys:String>
             <sys:String>nova-3-meeting</sys:String>
+        </x:Array>
+        <x:Array x:Key="LanguageModes" Type="{x:Type sys:String}">
+            <sys:String>tr-en</sys:String>
+            <sys:String>en-tr</sys:String>
+            <sys:String>tr</sys:String>
+            <sys:String>en</sys:String>
+            <sys:String>multi</sys:String>
         </x:Array>
         <x:Array x:Key="DeepLModelTypes" Type="{x:Type sys:String}">
             <sys:String>latency_optimized</sys:String>
@@ -34,6 +41,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Text="⚙️  API Ayarları" FontSize="20" FontWeight="Bold"
@@ -49,11 +57,32 @@
                      Foreground="{StaticResource TextPrimaryBrush}"
                      BorderBrush="{StaticResource SurfaceLightBrush}"/>
 
-            <TextBlock Text="Model" FontSize="13" FontWeight="SemiBold"
-                       Foreground="{StaticResource TextSecondaryBrush}" Margin="0,10,0,6"/>
-            <ComboBox ItemsSource="{StaticResource DeepgramModels}"
-                      SelectedItem="{Binding DeepgramModel}"
-                      IsEditable="True" Width="200" HorizontalAlignment="Left"/>
+            <Grid Margin="0,10,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                    <TextBlock Text="Model" FontSize="13" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+                    <ComboBox ItemsSource="{StaticResource DeepgramModels}"
+                              SelectedItem="{Binding DeepgramModel}"
+                              IsEditable="True"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                    <TextBlock Text="Dil Modu" FontSize="13" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+                    <ComboBox ItemsSource="{StaticResource LanguageModes}"
+                              SelectedItem="{Binding DeepgramLanguage}"/>
+                </StackPanel>
+            </Grid>
+
+            <TextBlock TextWrapping="Wrap" FontSize="10" Margin="0,4,0,0"
+                       Foreground="{StaticResource TextSecondaryBrush}">
+                tr-en: Türkçe primary + İngilizce paralel | en-tr: İngilizce primary + Türkçe paralel | tr/en: tek dil | multi: Deepgram code-switching
+            </TextBlock>
         </StackPanel>
 
         <!-- DeepL -->
@@ -105,12 +134,12 @@
         </TextBlock>
 
         <!-- Status -->
-        <TextBlock Grid.Row="5" Text="{Binding StatusMessage}" FontSize="12"
+        <TextBlock Grid.Row="6" Text="{Binding StatusMessage}" FontSize="12"
                    Foreground="{StaticResource WarningBrush}" TextWrapping="Wrap"
                    VerticalAlignment="Bottom" Margin="0,0,0,12"/>
 
         <!-- Buttons -->
-        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="Kaydet" Command="{Binding SaveCommand}"
                     Style="{StaticResource PrimaryButton}" Margin="0,0,10,0"/>
             <Button Content="Kapat" Click="OnCloseClick"

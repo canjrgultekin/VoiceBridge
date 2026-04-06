@@ -22,6 +22,13 @@ public sealed class AudioDeviceChangedEventArgs : EventArgs
     public required bool AffectsCurrentSession { get; init; }
 }
 
+public sealed class AudioLevelEventArgs : EventArgs
+{
+    public required double Peak { get; init; }
+    public required double Rms { get; init; }
+    public required AudioSourceType SourceType { get; init; }
+}
+
 public sealed class TranscriptReceivedEventArgs : EventArgs
 {
     public required TranscriptEntry Entry { get; init; }

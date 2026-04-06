@@ -7,6 +7,7 @@ public interface IAudioCaptureService : IAsyncDisposable
     event EventHandler<AudioDataEventArgs>? AudioDataAvailable;
     event EventHandler<AudioCaptureErrorEventArgs>? CaptureError;
     event EventHandler<AudioDeviceChangedEventArgs>? DeviceChanged;
+    event EventHandler<AudioLevelEventArgs>? AudioLevelChanged;
 
     IReadOnlyList<AudioDeviceInfo> GetAvailableDevices();
     Task StartCaptureAsync(AudioCaptureRequest request, CancellationToken ct = default);

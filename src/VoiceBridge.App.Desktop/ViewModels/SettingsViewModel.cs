@@ -17,6 +17,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private string _deepgramApiKey = string.Empty;
     [ObservableProperty] private string _deepLApiKey = string.Empty;
     [ObservableProperty] private string _deepgramModel = "nova-3";
+    [ObservableProperty] private string _deepgramLanguage = "tr-en";
     [ObservableProperty] private string _deepLModelType = "latency_optimized";
     [ObservableProperty] private string _deepLFormality = "default";
     [ObservableProperty] private bool _autoTranslate = true;
@@ -29,11 +30,11 @@ public partial class SettingsViewModel : ObservableObject
         _deepgramApiKey = opts.Deepgram.ApiKey;
         _deepLApiKey = opts.DeepL.ApiKey;
         _deepgramModel = opts.Deepgram.Model;
+        _deepgramLanguage = opts.Deepgram.Language;
         _deepLModelType = opts.DeepL.ModelType;
         _deepLFormality = opts.DeepL.Formality;
         _autoTranslate = opts.Translation.AutoTranslate;
 
-        // Eğer user config varsa oradan da oku (override)
         LoadUserSettings();
     }
 
@@ -53,6 +54,8 @@ public partial class SettingsViewModel : ObservableObject
                 DeepgramApiKey = dgKey;
             if (dg?["Model"]?.GetValue<string>() is { Length: > 0 } dgModel)
                 DeepgramModel = dgModel;
+            if (dg?["Language"]?.GetValue<string>() is { Length: > 0 } dgLang)
+                DeepgramLanguage = dgLang;
 
             var dl = vb["DeepL"];
             if (dl?["ApiKey"]?.GetValue<string>() is { Length: > 0 } dlKey)
@@ -66,13 +69,15 @@ public partial class SettingsViewModel : ObservableObject
             if (tr?["AutoTranslate"] is not null)
                 AutoTranslate = tr["AutoTranslate"]!.GetValue<bool>();
         }
-        catch { /* İlk kullanımda dosya yoksa sorun değil */ }
+        catch { }
     }
 
     partial void OnDeepgramApiKeyChanged(string value) => HasChanges = true;
     partial void OnDeepLApiKeyChanged(string value) => HasChanges = true;
     partial void OnDeepgramModelChanged(string value) => HasChanges = true;
+    partial void OnDeepgramLanguageChanged(string value) => HasChanges = true;
     partial void OnDeepLModelTypeChanged(string value) => HasChanges = true;
+    partial void OnDeepLFormalityChanged(string value) => HasChanges = true;
     partial void OnAutoTranslateChanged(bool value) => HasChanges = true;
 
     [RelayCommand]
@@ -87,7 +92,8 @@ public partial class SettingsViewModel : ObservableObject
                     ["Deepgram"] = new JsonObject
                     {
                         ["ApiKey"] = DeepgramApiKey,
-                        ["Model"] = DeepgramModel
+                        ["Model"] = DeepgramModel,
+                        ["Language"] = DeepgramLanguage
                     },
                     ["DeepL"] = new JsonObject
                     {

@@ -92,8 +92,28 @@
                               IsEnabled="{Binding IsSessionActive, Converter={StaticResource InverseBoolConverter}}"/>
                 </StackPanel>
 
-                <!-- Spacer -->
-                <Border Grid.Column="2"/>
+                <!-- VU Meter (mic level) -->
+                <Grid Grid.Column="2" Margin="8,0,16,0" VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="📊" FontSize="14" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <Grid Grid.Column="1" Height="14" MaxWidth="220">
+                        <Border Background="{StaticResource SurfaceLightBrush}" CornerRadius="3"/>
+                        <ProgressBar Minimum="0" Maximum="100" Value="{Binding MicLevel, Mode=OneWay}"
+                                     Background="Transparent" BorderThickness="0"
+                                     Foreground="{StaticResource SuccessBrush}"
+                                     Margin="1"/>
+                        <!-- Peak hold indicator -->
+                        <Rectangle Width="2" Height="14" Fill="#FFD166"
+                                   HorizontalAlignment="Left" VerticalAlignment="Stretch">
+                            <Rectangle.RenderTransform>
+                                <TranslateTransform X="{Binding MicLevelPeak, Mode=OneWay}"/>
+                            </Rectangle.RenderTransform>
+                        </Rectangle>
+                    </Grid>
+                </Grid>
 
                 <!-- Session Stats -->
                 <StackPanel Grid.Column="3" Orientation="Horizontal" Margin="0,0,16,0"
@@ -163,24 +183,39 @@
                                     <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
 
-                                <!-- Speaker Info -->
-                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
-                                    <Border Background="{StaticResource SurfaceLightBrush}"
-                                            CornerRadius="4" Padding="8,3">
-                                        <TextBlock FontSize="11" FontWeight="SemiBold"
-                                                   Foreground="{StaticResource TextPrimaryBrush}"
-                                                   Text="{Binding SpeakerLabel}"/>
-                                    </Border>
-                                    <TextBlock Text="{Binding LanguageFlag}" FontSize="16"
-                                               Margin="8,0,0,0" VerticalAlignment="Center"/>
-                                    <TextBlock Text="{Binding Timestamp}" FontSize="11"
-                                               Foreground="{StaticResource TextSecondaryBrush}"
-                                               Margin="8,0,0,0" VerticalAlignment="Center"/>
-                                    <TextBlock Text="⏳" FontSize="11" Margin="8,0,0,0"
-                                               VerticalAlignment="Center"
-                                               Visibility="{Binding IsTranslationPending,
-                                                   Converter={StaticResource BoolToVisibilityConverter}}"/>
-                                </StackPanel>
+                                <!-- Speaker Info Row -->
+                                <Grid Grid.Row="0" Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                        <Border Background="{StaticResource SurfaceLightBrush}"
+                                                CornerRadius="4" Padding="8,3">
+                                            <TextBlock FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                                       Text="{Binding SpeakerLabel}"/>
+                                        </Border>
+                                        <TextBlock Text="{Binding LanguageFlag}" FontSize="16"
+                                                   Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                        <TextBlock Text="{Binding Timestamp}" FontSize="11"
+                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                   Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                        <TextBlock Text="⏳" FontSize="11" Margin="8,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   Visibility="{Binding IsTranslationPending,
+                                                       Converter={StaticResource BoolToVisibilityConverter}}"/>
+                                    </StackPanel>
+
+                                    <!-- Per-entry copy button -->
+                                    <Button Grid.Column="1" Content="📋"
+                                            Command="{Binding CopyEntryCommand}"
+                                            Background="Transparent" BorderThickness="0"
+                                            Cursor="Hand" FontSize="13" Padding="6,2"
+                                            Foreground="{StaticResource TextSecondaryBrush}"
+                                            ToolTip="Bu kaydı panoya kopyala"/>
+                                </Grid>
 
                                 <!-- Original Text -->
                                 <TextBlock Grid.Row="1" Text="{Binding OriginalText}"
@@ -211,20 +246,26 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
                 <TextBlock Grid.Column="0" Text="{Binding StatusText}" FontSize="12"
                            Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
 
-                <Button Grid.Column="1" Content="📋 Temizle"
+                <Button Grid.Column="1" Content="🗑 Temizle"
                         Command="{Binding ClearTranscriptCommand}"
                         Style="{StaticResource PrimaryButton}"
                         FontSize="12" Padding="12,6" Margin="0,0,8,0"/>
-                <Button Grid.Column="2" Content="💾 TXT"
+                <Button Grid.Column="2" Content="📋 Kopyala"
+                        Command="{Binding CopyAllCommand}"
+                        Style="{StaticResource PrimaryButton}"
+                        FontSize="12" Padding="12,6" Margin="0,0,8,0"
+                        ToolTip="Tüm transkripti panoya kopyala"/>
+                <Button Grid.Column="3" Content="💾 TXT"
                         Command="{Binding ExportAsTextCommand}"
                         Style="{StaticResource PrimaryButton}"
                         FontSize="12" Padding="12,6" Margin="0,0,8,0"/>
-                <Button Grid.Column="3" Content="🎬 SRT"
+                <Button Grid.Column="4" Content="🎬 SRT"
                         Command="{Binding ExportAsSrtCommand}"
                         Style="{StaticResource PrimaryButton}"
                         FontSize="12" Padding="12,6"/>

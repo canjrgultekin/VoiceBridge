@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text;
 using System.Windows;
 using System.Windows.Data;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -47,6 +48,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private int _entryCount;
     [ObservableProperty] private string _sessionDuration = "00:00:00";
     [ObservableProperty] private bool _apiKeysValid;
+    [ObservableProperty] private double _micLevel;
+    [ObservableProperty] private double _micLevelPeak;
 
     private DateTime _sessionStartTime;
     private System.Threading.Timer? _durationTimer;
@@ -74,6 +77,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _transcriptManager.StateChanged += OnStateChanged;
         _transcriptManager.AudioDeviceChanged += OnAudioDeviceChanged;
         _transcriptManager.AudioCaptureError += OnAudioCaptureError;
+
+        // Audio level metering — direkt audio service'ten dinle
+        _audioCaptureService.AudioLevelChanged += OnAudioLevelChanged;
 
         SelectedSourceType = SourceTypeOptions[0];
         LoadAudioDevices();
@@ -203,6 +209,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _durationTimer?.Dispose();
             _durationTimer = null;
             IsSessionActive = false;
+            MicLevel = 0;
+            MicLevelPeak = 0;
             StatusText = "Durduruldu";
             ConnectionState = "Bağlantı kesildi";
         }
@@ -228,6 +236,40 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
+    private void CopyAll()
+    {
+        try
+        {
+            var sb = new StringBuilder();
+            List<TranscriptEntryViewModel> snapshot;
+            lock (_entriesLock) { snapshot = Entries.Where(x => !x.IsInterim).ToList(); }
+
+            foreach (var entry in snapshot)
+            {
+                sb.AppendLine($"[{entry.Timestamp}] {entry.SpeakerLabel} {entry.LanguageFlag}");
+                sb.AppendLine(entry.OriginalText);
+                if (!string.IsNullOrEmpty(entry.TranslatedText) && !entry.IsTranslationFailed)
+                    sb.AppendLine($"→ {entry.TranslatedText}");
+                sb.AppendLine();
+            }
+
+            if (sb.Length == 0)
+            {
+                StatusText = "Kopyalanacak içerik yok";
+                return;
+            }
+
+            Clipboard.SetText(sb.ToString());
+            StatusText = $"📋 {snapshot.Count} kayıt panoya kopyalandı";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Kopyalama hatası: {ex.Message}";
+            _logger.LogError(ex, "CopyAll hatası");
+        }
+    }
+
+    [RelayCommand]
     private async Task ExportAsTextAsync()
     {
         var dialog = new SaveFileDialog
@@ -240,7 +282,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             try
             {
                 await _transcriptManager.ExportAsTextAsync(dialog.FileName);
-                StatusText = $"Dışa aktarıldı: {dialog.FileName}";
+                StatusText = $"💾 Dışa aktarıldı: {dialog.FileName}";
             }
             catch (Exception ex)
             {
@@ -263,7 +305,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             try
             {
                 await _transcriptManager.ExportAsSrtAsync(dialog.FileName);
-                StatusText = $"Dışa aktarıldı: {dialog.FileName}";
+                StatusText = $"💾 Dışa aktarıldı: {dialog.FileName}";
             }
             catch (Exception ex)
             {
@@ -358,16 +400,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             LoadAudioDevices();
 
-            // Audio retry loop'tan gelen "yeniden bağlandı" sinyali
             if (e.AffectsCurrentSession && e.DeviceName.Contains("yeniden bağlandı"))
             {
                 StatusText = "🟢 Mikrofon yeniden bağlandı — Dinleniyor";
                 ConnectionState = "🟢 Bağlı - Dinleniyor";
-                _logger.LogInformation("Mikrofon yeniden bağlandı, UI güncellendi");
                 return;
             }
 
-            // Aktif session'daki cihaz olumsuz etkilendiyse uyar
             if (e.AffectsCurrentSession && IsSessionActive)
             {
                 StatusText = e.ChangeType == AudioDeviceChangeType.Removed
@@ -387,6 +426,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
             ConnectionState = "🟡 Mikrofon yeniden bağlanıyor...";
             StatusText = $"🟡 {e.Message}";
             _logger.LogWarning("Audio capture error UI'a iletildi: {Message}", e.Message);
+        });
+    }
+
+    private void OnAudioLevelChanged(object? sender, AudioLevelEventArgs e)
+    {
+        // Mikrofon seviyesi UI'a (0-100 arası)
+        var rmsPercent = e.Rms * 100.0;
+        var peakPercent = e.Peak * 100.0;
+
+        _ = RunOnUiAsync(() =>
+        {
+            MicLevel = rmsPercent;
+
+            // Peak hold (decay): yeni peak yüksekse anında al, aksi halde yavaşça düş
+            if (peakPercent > MicLevelPeak)
+                MicLevelPeak = peakPercent;
+            else
+                MicLevelPeak = Math.Max(0, MicLevelPeak - 2);
         });
     }
 
@@ -412,6 +469,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _transcriptManager.StateChanged -= OnStateChanged;
         _transcriptManager.AudioDeviceChanged -= OnAudioDeviceChanged;
         _transcriptManager.AudioCaptureError -= OnAudioCaptureError;
+        _audioCaptureService.AudioLevelChanged -= OnAudioLevelChanged;
     }
 }
 
@@ -450,6 +508,25 @@ public partial class TranscriptEntryViewModel : ObservableObject
         OriginalText = entry.OriginalText;
         Language = entry.Language;
         LanguageFlag = entry.Language == DetectedLanguage.Turkish ? "🇹🇷" : "🇬🇧";
+    }
+
+    [RelayCommand]
+    private void CopyEntry()
+    {
+        try
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine($"[{Timestamp}] {SpeakerLabel} {LanguageFlag}");
+            sb.AppendLine(OriginalText);
+            if (!string.IsNullOrEmpty(TranslatedText) && !IsTranslationFailed)
+                sb.AppendLine($"→ {TranslatedText}");
+
+            Clipboard.SetText(sb.ToString());
+        }
+        catch
+        {
+            // Sessizce yok say
+        }
     }
 }
 
