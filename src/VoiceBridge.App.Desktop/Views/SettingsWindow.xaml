@@ -1,0 +1,111 @@
+<Window x:Class="VoiceBridge.App.Desktop.Views.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="VoiceBridge — Ayarlar"
+        Height="520" Width="550"
+        Background="{StaticResource BgBrush}"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <TextBlock Grid.Row="0" Text="⚙️  API Ayarları" FontSize="20" FontWeight="Bold"
+                   Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,20"/>
+
+        <!-- Deepgram Section -->
+        <StackPanel Grid.Row="1" Margin="0,0,0,16">
+            <TextBlock Text="Deepgram API Key" FontSize="13" FontWeight="SemiBold"
+                       Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+            <TextBox Text="{Binding DeepgramApiKey, UpdateSourceTrigger=PropertyChanged}"
+                     FontSize="13" Padding="10,8"
+                     Background="{StaticResource SurfaceBrush}"
+                     Foreground="{StaticResource TextPrimaryBrush}"
+                     BorderBrush="{StaticResource SurfaceLightBrush}"/>
+
+            <TextBlock Text="Model" FontSize="13" FontWeight="SemiBold"
+                       Foreground="{StaticResource TextSecondaryBrush}" Margin="0,10,0,6"/>
+            <ComboBox SelectedItem="{Binding DeepgramModel}" IsEditable="True" Width="200"
+                      HorizontalAlignment="Left">
+                <ComboBoxItem Content="nova-3"/>
+                <ComboBoxItem Content="nova-3-general"/>
+                <ComboBoxItem Content="nova-3-meeting"/>
+            </ComboBox>
+        </StackPanel>
+
+        <!-- DeepL Section -->
+        <StackPanel Grid.Row="2" Margin="0,0,0,16">
+            <TextBlock Text="DeepL API Key" FontSize="13" FontWeight="SemiBold"
+                       Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+            <TextBox Text="{Binding DeepLApiKey, UpdateSourceTrigger=PropertyChanged}"
+                     FontSize="13" Padding="10,8"
+                     Background="{StaticResource SurfaceBrush}"
+                     Foreground="{StaticResource TextPrimaryBrush}"
+                     BorderBrush="{StaticResource SurfaceLightBrush}"/>
+
+            <Grid Margin="0,10,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                    <TextBlock Text="Çeviri Modu" FontSize="13" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+                    <ComboBox SelectedItem="{Binding DeepLModelType}" IsEditable="True">
+                        <ComboBoxItem Content="latency_optimized"/>
+                        <ComboBoxItem Content="quality_optimized"/>
+                    </ComboBox>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                    <TextBlock Text="Formalite" FontSize="13" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+                    <ComboBox SelectedItem="{Binding DeepLFormality}" IsEditable="True">
+                        <ComboBoxItem Content="default"/>
+                        <ComboBoxItem Content="more"/>
+                        <ComboBoxItem Content="less"/>
+                    </ComboBox>
+                </StackPanel>
+            </Grid>
+        </StackPanel>
+
+        <!-- Translation Section -->
+        <StackPanel Grid.Row="3" Margin="0,0,0,16">
+            <CheckBox IsChecked="{Binding AutoTranslate}" Margin="0,0,0,4">
+                <TextBlock Text="Otomatik çeviri" FontSize="13"
+                           Foreground="{StaticResource TextPrimaryBrush}"/>
+            </CheckBox>
+        </StackPanel>
+
+        <!-- Info -->
+        <TextBlock Grid.Row="4" TextWrapping="Wrap" FontSize="11"
+                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,12">
+            API key'leriniz yerel olarak appsettings.user.json dosyasında saklanır.
+            Deepgram: deepgram.com/signup (ücretsiz $200 kredi).
+            DeepL: deepl.com/pro-api (ayda 500K karakter ücretsiz).
+        </TextBlock>
+
+        <!-- Status -->
+        <TextBlock Grid.Row="5" Text="{Binding StatusMessage}" FontSize="12"
+                   Foreground="{StaticResource WarningBrush}" TextWrapping="Wrap"
+                   VerticalAlignment="Bottom" Margin="0,0,0,12"/>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Kaydet" Command="{Binding SaveCommand}"
+                    Style="{StaticResource PrimaryButton}" Margin="0,0,10,0"/>
+            <Button Content="Kapat" Click="OnCloseClick"
+                    Style="{StaticResource PrimaryButton}"/>
+        </StackPanel>
+    </Grid>
+</Window>

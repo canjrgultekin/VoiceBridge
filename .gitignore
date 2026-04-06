@@ -1,0 +1,8 @@
+bin/
+obj/
+.vs/
+*.user
+appsettings.*.json
+!appsettings.json
+*.nupkg
+publish/
