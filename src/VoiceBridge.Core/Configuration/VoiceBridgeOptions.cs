@@ -14,11 +14,18 @@ public sealed class DeepgramOptions
 {
     public string ApiKey { get; set; } = string.Empty;
     public string Model { get; set; } = "nova-3";
-    public string Language { get; set; } = "multi";
+
+    // Dil modu:
+    // "tr"    = sadece Türkçe
+    // "en"    = sadece İngilizce
+    // "tr-en" = Dual stream (Türkçe primary + İngilizce secondary)
+    // "en-tr" = Dual stream (İngilizce primary + Türkçe secondary)
+    // "multi" = Deepgram multilingual code-switching (Türkçe desteği sınırlı)
+    public string Language { get; set; } = "tr-en";
+
     public bool Diarize { get; set; } = true;
     public bool SmartFormat { get; set; } = true;
     public bool Punctuate { get; set; } = true;
-    public bool DetectLanguage { get; set; } = true;
     public int SampleRate { get; set; } = 16000;
     public string Encoding { get; set; } = "linear16";
     public int Channels { get; set; } = 1;

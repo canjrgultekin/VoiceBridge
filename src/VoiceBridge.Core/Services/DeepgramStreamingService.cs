@@ -1,7 +1,6 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VoiceBridge.Core.Configuration;
@@ -15,10 +14,18 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
 {
     private readonly DeepgramOptions _options;
     private readonly ILogger<DeepgramStreamingService> _logger;
-    private ClientWebSocket? _ws;
+
+    // Dual stream: TR ve EN için ayrı WebSocket bağlantıları
+    private ClientWebSocket? _wsPrimary;
+    private ClientWebSocket? _wsSecondary;
     private CancellationTokenSource? _receiveCts;
-    private Task? _receiveTask;
+    private Task? _receivePrimaryTask;
+    private Task? _receiveSecondaryTask;
     private SessionState _currentState = SessionState.Idle;
+
+    private string _primaryLanguage = "tr";
+    private string _secondaryLanguage = "en";
+    private bool _dualMode;
 
     public event EventHandler<TranscriptReceivedEventArgs>? TranscriptReceived;
     public event EventHandler<SpeechRecognitionErrorEventArgs>? RecognitionError;
@@ -32,6 +39,25 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
     {
         _options = options.Value.Deepgram;
         _logger = logger;
+
+        // Dil konfigürasyonunu belirle
+        if (_options.Language == "tr-en" || _options.Language == "dual")
+        {
+            _dualMode = true;
+            _primaryLanguage = "tr";
+            _secondaryLanguage = "en";
+        }
+        else if (_options.Language == "en-tr")
+        {
+            _dualMode = true;
+            _primaryLanguage = "en";
+            _secondaryLanguage = "tr";
+        }
+        else
+        {
+            _dualMode = false;
+            _primaryLanguage = _options.Language;
+        }
     }
 
     public async Task ConnectAsync(CancellationToken ct = default)
@@ -43,20 +69,32 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
 
         try
         {
-            _ws?.Dispose();
-            _ws = new ClientWebSocket();
-            _ws.Options.SetRequestHeader("Authorization", $"Token {_options.ApiKey}");
-
-            var uri = BuildConnectionUri();
-            _logger.LogInformation("Deepgram'a bağlanılıyor: {Uri}", uri);
-
-            await _ws.ConnectAsync(uri, ct);
-
             _receiveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
+
+            // Primary stream (TR veya tek dil)
+            _wsPrimary = await CreateAndConnectWebSocket(_primaryLanguage, ct);
+            _receivePrimaryTask = ReceiveLoopAsync(_wsPrimary, _primaryLanguage, _receiveCts.Token);
+
+            _logger.LogInformation("Primary stream bağlandı: {Lang}", _primaryLanguage);
+
+            // Dual modda secondary stream (EN)
+            if (_dualMode)
+            {
+                try
+                {
+                    _wsSecondary = await CreateAndConnectWebSocket(_secondaryLanguage, ct);
+                    _receiveSecondaryTask = ReceiveLoopAsync(_wsSecondary, _secondaryLanguage, _receiveCts.Token);
+                    _logger.LogInformation("Secondary stream bağlandı: {Lang}", _secondaryLanguage);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Secondary stream ({Lang}) bağlanamadı, sadece primary ile devam ediliyor", _secondaryLanguage);
+                    _wsSecondary = null;
+                }
+            }
 
             SetState(SessionState.Listening);
-            _logger.LogInformation("Deepgram bağlantısı kuruldu");
+            _logger.LogInformation("Deepgram bağlantısı kuruldu (DualMode: {Dual})", _dualMode);
         }
         catch (Exception ex)
         {
@@ -71,76 +109,101 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
         }
     }
 
+    private async Task<ClientWebSocket> CreateAndConnectWebSocket(string language, CancellationToken ct)
+    {
+        var ws = new ClientWebSocket();
+        ws.Options.SetRequestHeader("Authorization", $"Token {_options.ApiKey}");
+
+        var uri = BuildConnectionUri(language);
+        _logger.LogInformation("Deepgram'a bağlanılıyor [{Lang}]: {Uri}", language, uri);
+
+        await ws.ConnectAsync(uri, ct);
+        return ws;
+    }
+
     public async Task SendAudioAsync(ReadOnlyMemory<byte> audioData, CancellationToken ct = default)
     {
-        if (_ws is null || _ws.State != WebSocketState.Open)
-            return;
+        // Her iki stream'e de aynı audio'yu gönder
+        var tasks = new List<Task>(2);
 
+        if (_wsPrimary?.State == WebSocketState.Open)
+        {
+            tasks.Add(SendToSocketAsync(_wsPrimary, audioData, ct));
+        }
+
+        if (_dualMode && _wsSecondary?.State == WebSocketState.Open)
+        {
+            tasks.Add(SendToSocketAsync(_wsSecondary, audioData, ct));
+        }
+
+        if (tasks.Count > 0)
+            await Task.WhenAll(tasks);
+    }
+
+    private static async Task SendToSocketAsync(ClientWebSocket ws, ReadOnlyMemory<byte> data, CancellationToken ct)
+    {
         try
         {
-            await _ws.SendAsync(audioData, WebSocketMessageType.Binary, true, ct);
+            await ws.SendAsync(data, WebSocketMessageType.Binary, true, ct);
         }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Audio gönderim hatası");
-        }
+        catch { /* Hata receive loop'ta yakalanacak */ }
     }
 
     public async Task DisconnectAsync(CancellationToken ct = default)
     {
-        if (_ws is null)
-            return;
+        _receiveCts?.Cancel();
 
-        try
-        {
-            if (_ws.State == WebSocketState.Open)
-            {
-                var closeMsg = JsonSerializer.SerializeToUtf8Bytes(
-                    new { type = "CloseStream" });
-                await _ws.SendAsync(closeMsg, WebSocketMessageType.Text, true, ct);
+        await CloseWebSocket(_wsPrimary, ct);
+        await CloseWebSocket(_wsSecondary, ct);
 
-                using var closeCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                try
-                {
-                    await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", closeCts.Token);
-                }
-                catch (OperationCanceledException) { }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Deepgram kapanış hatası");
-        }
-        finally
-        {
-            _receiveCts?.Cancel();
+        var tasks = new List<Task>();
+        if (_receivePrimaryTask is not null) tasks.Add(SafeAwait(_receivePrimaryTask));
+        if (_receiveSecondaryTask is not null) tasks.Add(SafeAwait(_receiveSecondaryTask));
+        if (tasks.Count > 0) await Task.WhenAll(tasks);
 
-            if (_receiveTask is not null)
-            {
-                try { await _receiveTask; }
-                catch (OperationCanceledException) { }
-            }
+        _wsPrimary?.Dispose();
+        _wsSecondary?.Dispose();
+        _wsPrimary = null;
+        _wsSecondary = null;
 
-            _ws?.Dispose();
-            _ws = null;
-            SetState(SessionState.Disconnected);
-        }
+        SetState(SessionState.Disconnected);
     }
 
-    private async Task ReceiveLoopAsync(CancellationToken ct)
+    private static async Task CloseWebSocket(ClientWebSocket? ws, CancellationToken ct)
+    {
+        if (ws is null) return;
+        try
+        {
+            if (ws.State == WebSocketState.Open)
+            {
+                var closeMsg = Encoding.UTF8.GetBytes("{\"type\":\"CloseStream\"}");
+                await ws.SendAsync(closeMsg, WebSocketMessageType.Text, true, ct);
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", cts.Token);
+            }
+        }
+        catch { }
+    }
+
+    private static async Task SafeAwait(Task task)
+    {
+        try { await task; } catch (OperationCanceledException) { }
+    }
+
+    private async Task ReceiveLoopAsync(ClientWebSocket ws, string language, CancellationToken ct)
     {
         var buffer = new byte[8192];
         var messageBuffer = new MemoryStream();
 
         try
         {
-            while (!ct.IsCancellationRequested && _ws?.State == WebSocketState.Open)
+            while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
             {
-                var result = await _ws.ReceiveAsync(buffer, ct);
+                var result = await ws.ReceiveAsync(buffer, ct);
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    _logger.LogInformation("Deepgram bağlantıyı kapattı");
+                    _logger.LogInformation("Deepgram [{Lang}] bağlantıyı kapattı", language);
                     break;
                 }
 
@@ -152,81 +215,64 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
                         messageBuffer.GetBuffer(), 0, (int)messageBuffer.Length);
                     messageBuffer.SetLength(0);
 
-                    ProcessMessage(json);
+                    ProcessMessage(json, language);
                 }
             }
         }
         catch (OperationCanceledException) { }
         catch (WebSocketException ex)
         {
-            _logger.LogError(ex, "WebSocket alım hatası");
-            RecognitionError?.Invoke(this, new SpeechRecognitionErrorEventArgs
-            {
-                Message = $"WebSocket hatası: {ex.Message}",
-                Exception = ex
-            });
-        }
-        finally
-        {
-            if (_currentState == SessionState.Listening)
-                SetState(SessionState.Disconnected);
+            _logger.LogError(ex, "WebSocket [{Lang}] alım hatası", language);
         }
     }
 
-    private void ProcessMessage(string json)
+    private void ProcessMessage(string json, string language)
     {
         try
         {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
-
             var type = root.GetProperty("type").GetString();
 
             if (type == "Results")
-            {
-                ProcessTranscriptResult(root);
-            }
-            else if (type == "Metadata")
-            {
-                _logger.LogDebug("Deepgram metadata alındı");
-            }
-            else if (type == "UtteranceEnd")
-            {
-                _logger.LogDebug("Utterance sonu algılandı");
-            }
+                ProcessTranscriptResult(root, language);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Deepgram mesaj işleme hatası: {Json}", json[..Math.Min(200, json.Length)]);
+            _logger.LogWarning(ex, "Deepgram [{Lang}] mesaj işleme hatası", language);
         }
     }
 
-    private void ProcessTranscriptResult(JsonElement root)
+    private void ProcessTranscriptResult(JsonElement root, string streamLanguage)
     {
         var channel = root.GetProperty("channel");
         var alternatives = channel.GetProperty("alternatives");
 
-        if (alternatives.GetArrayLength() == 0)
-            return;
+        if (alternatives.GetArrayLength() == 0) return;
 
         var best = alternatives[0];
         var transcript = best.GetProperty("transcript").GetString();
 
-        if (string.IsNullOrWhiteSpace(transcript))
-            return;
+        if (string.IsNullOrWhiteSpace(transcript)) return;
 
         var isFinal = root.GetProperty("is_final").GetBoolean();
         var confidence = best.GetProperty("confidence").GetDouble();
 
-        // Dil tespiti - channel seviyesinde
-        var detectedLang = DetectedLanguage.Unknown;
-        if (channel.TryGetProperty("detected_language", out var langProp))
-        {
-            var langCode = langProp.GetString();
-            detectedLang = ParseLanguageCode(langCode);
-        }
+        // Düşük confidence'lı sonuçları filtrele (yanlış dil algılama önlemi)
+        // Dual modda her iki stream de aynı sesi dinliyor,
+        // yanlış dildeki stream düşük confidence verecek
+        if (_dualMode && confidence < 0.3)
+            return;
 
-        // Speaker diarization
+        // Dil: stream'in dilinden al
+        var detectedLang = streamLanguage switch
+        {
+            "tr" => DetectedLanguage.Turkish,
+            "en" => DetectedLanguage.English,
+            _ => DetectedLanguage.Unknown
+        };
+
+        // Speaker diarization ve timing
         var speakerIndex = 0;
         var words = best.GetProperty("words");
         double startTime = 0, endTime = 0;
@@ -241,13 +287,6 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
 
             if (firstWord.TryGetProperty("speaker", out var speakerProp))
                 speakerIndex = speakerProp.GetInt32();
-
-            // Kelime bazlı dil tespiti (channel seviyesinde yoksa)
-            if (detectedLang == DetectedLanguage.Unknown &&
-                firstWord.TryGetProperty("language", out var wordLangProp))
-            {
-                detectedLang = ParseLanguageCode(wordLangProp.GetString());
-            }
         }
 
         var entry = new TranscriptEntry
@@ -265,45 +304,28 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
         TranscriptReceived?.Invoke(this, new TranscriptReceivedEventArgs { Entry = entry });
     }
 
-    private static DetectedLanguage ParseLanguageCode(string? code) => code switch
+    private Uri BuildConnectionUri(string language)
     {
-        "tr" => DetectedLanguage.Turkish,
-        "en" => DetectedLanguage.English,
-        _ => DetectedLanguage.Unknown
-    };
+        var model = _options.Model;
+        if (model.Contains(':')) model = "nova-3";
+        model = model.Trim();
 
-    private Uri BuildConnectionUri()
-    {
-        var queryParams = new Dictionary<string, string>
-        {
-            ["model"] = _options.Model,
-            ["language"] = _options.Language,
-            ["sample_rate"] = _options.SampleRate.ToString(),
-            ["encoding"] = _options.Encoding,
-            ["channels"] = _options.Channels.ToString(),
-            ["smart_format"] = _options.SmartFormat.ToString().ToLower(),
-            ["punctuate"] = _options.Punctuate.ToString().ToLower(),
-            ["diarize"] = _options.Diarize.ToString().ToLower(),
-            ["interim_results"] = _options.InterimResults.ToString().ToLower()
-        };
+        var sb = new StringBuilder("wss://api.deepgram.com/v1/listen?");
+        sb.Append($"model={Uri.EscapeDataString(model)}");
+        sb.Append($"&language={Uri.EscapeDataString(language)}");
+        sb.Append($"&encoding={_options.Encoding}");
+        sb.Append($"&sample_rate={_options.SampleRate}");
+        sb.Append($"&channels={_options.Channels}");
 
-        // Multilingual code-switching için endpointing=100 öneriliyor
-        if (_options.Language == "multi")
-        {
-            queryParams["endpointing"] = "100";
-        }
+        if (_options.SmartFormat) sb.Append("&smart_format=true");
+        if (_options.Punctuate) sb.Append("&punctuate=true");
+        if (_options.InterimResults) sb.Append("&interim_results=true");
+        if (_options.Diarize) sb.Append("&diarize=true");
 
-        // utterance_end sadece streaming'de, endpointing ile birlikte
         if (_options.UtteranceEnd)
-        {
-            queryParams["utterance_end_ms"] = _options.UtteranceEndMs.ToString();
-        }
+            sb.Append($"&utterance_end_ms={_options.UtteranceEndMs}");
 
-        // NOT: detect_language streaming'de desteklenmiyor
-        // language=multi zaten otomatik dil tespiti yapıyor
-
-        var qs = string.Join("&", queryParams.Select(kv => $"{kv.Key}={Uri.EscapeDataString(kv.Value)}"));
-        return new Uri($"wss://api.deepgram.com/v1/listen?{qs}");
+        return new Uri(sb.ToString());
     }
 
     private void SetState(SessionState newState)

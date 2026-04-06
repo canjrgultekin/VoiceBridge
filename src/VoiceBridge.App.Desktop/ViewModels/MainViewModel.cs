@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Windows;
+using System.Windows.Data;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.DependencyInjection;
@@ -21,6 +22,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly IServiceProvider _serviceProvider;
     private readonly VoiceBridgeOptions _options;
     private readonly ILogger<MainViewModel> _logger;
+    private readonly object _entriesLock = new();
 
     public ObservableCollection<TranscriptEntryViewModel> Entries { get; } = [];
     public ObservableCollection<AudioDeviceViewModel> MicrophoneDevices { get; } = [];
@@ -59,6 +61,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _serviceProvider = serviceProvider;
         _options = options.Value;
         _logger = logger;
+
+        // Thread-safe koleksiyon senkronizasyonu
+        BindingOperations.EnableCollectionSynchronization(Entries, _entriesLock);
 
         _transcriptManager.EntryAdded += OnEntryAdded;
         _transcriptManager.TranslationCompleted += OnTranslationCompleted;
@@ -169,7 +174,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void ClearTranscript()
     {
-        Entries.Clear();
+        lock (_entriesLock)
+        {
+            Entries.Clear();
+        }
         _transcriptManager.Clear();
         EntryCount = 0;
         SpeakerCount = 0;
@@ -207,9 +215,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private void OnEntryAdded(object? sender, TranscriptReceivedEventArgs e)
     {
-        Application.Current?.Dispatcher.Invoke(() =>
+        var entry = e.Entry;
+
+        lock (_entriesLock)
         {
-            var entry = e.Entry;
             if (entry.IsInterim)
             {
                 var existing = Entries.LastOrDefault(x =>
@@ -224,10 +233,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 var interims = Entries
                     .Where(x => x.IsInterim && x.SpeakerIndex == entry.SpeakerIndex)
                     .ToList();
-                foreach (var interim in interims) Entries.Remove(interim);
+                foreach (var interim in interims)
+                    Entries.Remove(interim);
+
                 Entries.Add(new TranscriptEntryViewModel(entry));
             }
+        }
 
+        Application.Current?.Dispatcher.Invoke(() =>
+        {
             EntryCount = Entries.Count(x => !x.IsInterim);
             SpeakerCount = _transcriptManager.Speakers.Count;
         });
@@ -235,7 +249,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private void OnTranslationCompleted(object? sender, TranslationCompletedEventArgs e)
     {
-        Application.Current?.Dispatcher.Invoke(() =>
+        lock (_entriesLock)
         {
             var entry = Entries.FirstOrDefault(x => x.Id == e.EntryId);
             if (entry is not null)
@@ -243,7 +257,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 entry.TranslatedText = e.TranslatedText;
                 entry.IsTranslationPending = false;
             }
-        });
+        }
     }
 
     private void OnStateChanged(object? sender, SessionStateChangedEventArgs e)
