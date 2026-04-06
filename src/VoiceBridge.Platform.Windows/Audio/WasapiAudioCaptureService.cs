@@ -12,12 +12,24 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
 {
     private readonly ILogger<WasapiAudioCaptureService> _logger;
     private readonly MMDeviceEnumerator _enumerator;
+    private readonly object _captureLock = new();
+
     private WasapiCapture? _micCapture;
     private WasapiLoopbackCapture? _loopbackCapture;
     private WaveFormat? _targetFormat;
     private bool _isCapturing;
     private string? _currentDeviceId;
     private bool _notificationsRegistered;
+
+    // Otomatik yeniden bağlanma için
+    private AudioCaptureRequest? _lastRequest;
+    private bool _shouldBeCapturing;
+    private CancellationTokenSource? _retryCts;
+    private Task? _retryTask;
+    private bool _isRetrying;
+
+    private const int RetryIntervalMs = 2000;
+    private const int MaxRetryAttempts = 60;  // ~2 dakika
 
     public event EventHandler<AudioDataEventArgs>? AudioDataAvailable;
     public event EventHandler<AudioCaptureErrorEventArgs>? CaptureError;
@@ -83,15 +95,12 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
             throw new InvalidOperationException("Ses yakalama zaten aktif");
 
         _targetFormat = new WaveFormat(request.SampleRate, request.BitsPerSample, request.Channels);
+        _lastRequest = request;
+        _shouldBeCapturing = true;
 
         try
         {
-            if (request.SourceType is AudioSourceType.Microphone or AudioSourceType.Both)
-                StartMicrophoneCapture(request.DeviceId);
-
-            if (request.SourceType is AudioSourceType.SystemAudio or AudioSourceType.Both)
-                StartLoopbackCapture();
-
+            StartCaptureInternal(request);
             _isCapturing = true;
             _logger.LogInformation("Ses yakalama başlatıldı: {SourceType}", request.SourceType);
         }
@@ -107,6 +116,18 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
         }
 
         return Task.CompletedTask;
+    }
+
+    private void StartCaptureInternal(AudioCaptureRequest request)
+    {
+        lock (_captureLock)
+        {
+            if (request.SourceType is AudioSourceType.Microphone or AudioSourceType.Both)
+                StartMicrophoneCapture(request.DeviceId);
+
+            if (request.SourceType is AudioSourceType.SystemAudio or AudioSourceType.Both)
+                StartLoopbackCapture();
+        }
     }
 
     private void StartMicrophoneCapture(string? deviceId)
@@ -243,10 +264,31 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)
     {
-        if (e.Exception is not null)
+        var source = sender == _micCapture ? "Mikrofon" : "Sistem sesi";
+
+        if (e.Exception is null)
         {
-            var source = sender == _micCapture ? "Mikrofon" : "Sistem sesi";
-            _logger.LogError(e.Exception, "{Source} kaydı durdu (hata)", source);
+            // Düzgün kapanış (Stop çağrıldı)
+            return;
+        }
+
+        _logger.LogWarning(e.Exception, "{Source} kaydı beklenmedik şekilde durdu", source);
+
+        // Sadece kullanıcı hala capture istiyorsa retry başlat
+        if (_shouldBeCapturing && _lastRequest is not null)
+        {
+            _isCapturing = false;
+
+            CaptureError?.Invoke(this, new AudioCaptureErrorEventArgs
+            {
+                Message = $"{source} bağlantısı koptu, yeniden bağlanılıyor...",
+                Exception = e.Exception
+            });
+
+            StartRetryLoop();
+        }
+        else
+        {
             CaptureError?.Invoke(this, new AudioCaptureErrorEventArgs
             {
                 Message = $"{source} hatası",
@@ -255,10 +297,99 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
         }
     }
 
-    public Task StopCaptureAsync(CancellationToken ct = default)
+    private void StartRetryLoop()
+    {
+        lock (_captureLock)
+        {
+            if (_isRetrying) return;
+            _isRetrying = true;
+
+            _retryCts?.Cancel();
+            _retryCts?.Dispose();
+            _retryCts = new CancellationTokenSource();
+
+            var ct = _retryCts.Token;
+            var request = _lastRequest!;
+            _retryTask = Task.Run(() => RetryCaptureLoopAsync(request, ct), CancellationToken.None);
+        }
+    }
+
+    private async Task RetryCaptureLoopAsync(AudioCaptureRequest request, CancellationToken ct)
+    {
+        _logger.LogInformation("Ses yakalama yeniden bağlanma döngüsü başladı");
+
+        int attempt = 0;
+        try
+        {
+            while (_shouldBeCapturing && !ct.IsCancellationRequested && attempt < MaxRetryAttempts)
+            {
+                attempt++;
+
+                try { await Task.Delay(RetryIntervalMs, ct); }
+                catch (OperationCanceledException) { return; }
+
+                try
+                {
+                    // Eski capture'ları temizle
+                    DisposeCaptures();
+
+                    // Yeniden başlat
+                    StartCaptureInternal(request);
+                    _isCapturing = true;
+
+                    _logger.LogInformation("Ses yakalama yeniden bağlandı (deneme {Attempt})", attempt);
+
+                    // UI'a bildir: cihaz tekrar aktif
+                    DeviceChanged?.Invoke(this, new AudioDeviceChangedEventArgs
+                    {
+                        DeviceId = _currentDeviceId ?? string.Empty,
+                        DeviceName = "Mikrofon yeniden bağlandı",
+                        ChangeType = AudioDeviceChangeType.StateChanged,
+                        AffectsCurrentSession = true
+                    });
+
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug("Mikrofon retry denemesi {Attempt} başarısız: {Error}",
+                        attempt, ex.Message);
+                }
+            }
+
+            if (_shouldBeCapturing && !ct.IsCancellationRequested)
+            {
+                _logger.LogError("Ses yakalama {Max} deneme sonunda yeniden bağlanamadı", MaxRetryAttempts);
+                CaptureError?.Invoke(this, new AudioCaptureErrorEventArgs
+                {
+                    Message = "Mikrofon yeniden bağlanamadı. Windows mikrofon ayarlarını kontrol edin ve session'ı yeniden başlatın."
+                });
+            }
+        }
+        finally
+        {
+            _isRetrying = false;
+        }
+    }
+
+    private void DisposeCaptures()
     {
         try { _micCapture?.StopRecording(); } catch { }
+        try { _micCapture?.Dispose(); } catch { }
+        _micCapture = null;
+
         try { _loopbackCapture?.StopRecording(); } catch { }
+        try { _loopbackCapture?.Dispose(); } catch { }
+        _loopbackCapture = null;
+    }
+
+    public Task StopCaptureAsync(CancellationToken ct = default)
+    {
+        _shouldBeCapturing = false;
+        _retryCts?.Cancel();
+
+        DisposeCaptures();
+
         _isCapturing = false;
         _currentDeviceId = null;
         _logger.LogInformation("Ses yakalama durduruldu");
@@ -266,7 +397,7 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
     }
 
     // IMMNotificationClient — Windows ses alt sisteminden bildirimleri yakalar
-    // Bu metodlar COM thread'inden çağrılır, UI thread değil
+    // Bu metodlar COM thread'inden çağrılır
 
     public void OnDeviceStateChanged(string deviceId, DeviceState newState)
     {
@@ -274,10 +405,26 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
         {
             var device = _enumerator.GetDevice(deviceId);
             var name = device.FriendlyName;
-            var affects = _isCapturing && deviceId == _currentDeviceId && newState != DeviceState.Active;
+            var affects = _shouldBeCapturing && deviceId == _currentDeviceId;
 
             _logger.LogInformation("Cihaz durum değişti: {Name} -> {State} (Etkiler: {Affects})",
                 name, newState, affects);
+
+            // Eğer kullandığımız cihaz tekrar Active olduysa retry'ı hemen tetikle
+            if (affects && newState == DeviceState.Active && _isRetrying)
+            {
+                _logger.LogInformation("Kullanılan cihaz tekrar aktif, retry hemen tetikleniyor");
+                // Retry loop zaten döndüğü için bir sonraki iterasyonda yakalayacak
+            }
+
+            // Cihaz çıkarıldı/disabled olduysa ve kullanıyorsak retry başlat
+            if (affects && newState != DeviceState.Active && _isCapturing)
+            {
+                _logger.LogWarning("Kullanılan cihaz devre dışı bırakıldı, retry başlatılıyor");
+                _isCapturing = false;
+                if (_lastRequest is not null)
+                    StartRetryLoop();
+            }
 
             DeviceChanged?.Invoke(this, new AudioDeviceChangedEventArgs
             {
@@ -314,8 +461,15 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
 
     public void OnDeviceRemoved(string deviceId)
     {
-        var affects = _isCapturing && deviceId == _currentDeviceId;
+        var affects = _shouldBeCapturing && deviceId == _currentDeviceId;
         _logger.LogInformation("Cihaz kaldırıldı: {Id} (Etkiler: {Affects})", deviceId, affects);
+
+        if (affects && _isCapturing)
+        {
+            _isCapturing = false;
+            if (_lastRequest is not null)
+                StartRetryLoop();
+        }
 
         DeviceChanged?.Invoke(this, new AudioDeviceChangedEventArgs
         {
@@ -360,24 +514,19 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
 
     public ValueTask DisposeAsync()
     {
-        try { _micCapture?.StopRecording(); } catch { }
-        try { _micCapture?.Dispose(); } catch { }
-        try { _loopbackCapture?.StopRecording(); } catch { }
-        try { _loopbackCapture?.Dispose(); } catch { }
+        _shouldBeCapturing = false;
+        _retryCts?.Cancel();
+
+        DisposeCaptures();
 
         if (_notificationsRegistered)
         {
-            try
-            {
-                _enumerator.UnregisterEndpointNotificationCallback(this);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Notification callback unregister hata");
-            }
+            try { _enumerator.UnregisterEndpointNotificationCallback(this); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Notification callback unregister hata"); }
         }
 
         try { _enumerator.Dispose(); } catch { }
+        try { _retryCts?.Dispose(); } catch { }
 
         _isCapturing = false;
         return ValueTask.CompletedTask;

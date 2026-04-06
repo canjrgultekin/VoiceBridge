@@ -31,6 +31,7 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
     public event EventHandler<TranslationCompletedEventArgs>? TranslationCompleted;
     public event EventHandler<SessionStateChangedEventArgs>? StateChanged;
     public event EventHandler<AudioDeviceChangedEventArgs>? AudioDeviceChanged;
+    public event EventHandler<AudioCaptureErrorEventArgs>? AudioCaptureError;
 
     public IReadOnlyList<TranscriptEntry> Entries
     {
@@ -185,7 +186,6 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
 
                 foreach (var result in results)
                 {
-                    // Başarılı olsa da olmasa da UI'a bildir ki "çevriliyor..." kalmasın
                     if (result.Success)
                     {
                         UpdateTranslation(result.Id, result.TranslatedText, failed: false);
@@ -236,6 +236,7 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
     private void OnCaptureError(object? sender, AudioCaptureErrorEventArgs e)
     {
         _logger.LogError(e.Exception, "Ses yakalama hatası: {Message}", e.Message);
+        AudioCaptureError?.Invoke(this, e);
     }
 
     private void OnAudioDeviceChanged(object? sender, AudioDeviceChangedEventArgs e)

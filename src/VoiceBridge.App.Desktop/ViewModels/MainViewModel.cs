@@ -67,18 +67,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _options = options.Value;
         _logger = logger;
 
-        // Thread-safe koleksiyon senkronizasyonu
         BindingOperations.EnableCollectionSynchronization(Entries, _entriesLock);
 
         _transcriptManager.EntryAdded += OnEntryAdded;
         _transcriptManager.TranslationCompleted += OnTranslationCompleted;
         _transcriptManager.StateChanged += OnStateChanged;
         _transcriptManager.AudioDeviceChanged += OnAudioDeviceChanged;
+        _transcriptManager.AudioCaptureError += OnAudioCaptureError;
 
         SelectedSourceType = SourceTypeOptions[0];
         LoadAudioDevices();
 
-        // Startup'ta API key'leri doğrula (non-blocking)
         _ = ValidateApiKeysOnStartupAsync();
     }
 
@@ -357,19 +356,37 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         _ = RunOnUiAsync(() =>
         {
-            // Cihaz listesini güncelle
             LoadAudioDevices();
 
-            // Kullanımdaki cihaz etkilendiyse uyar
+            // Audio retry loop'tan gelen "yeniden bağlandı" sinyali
+            if (e.AffectsCurrentSession && e.DeviceName.Contains("yeniden bağlandı"))
+            {
+                StatusText = "🟢 Mikrofon yeniden bağlandı — Dinleniyor";
+                ConnectionState = "🟢 Bağlı - Dinleniyor";
+                _logger.LogInformation("Mikrofon yeniden bağlandı, UI güncellendi");
+                return;
+            }
+
+            // Aktif session'daki cihaz olumsuz etkilendiyse uyar
             if (e.AffectsCurrentSession && IsSessionActive)
             {
                 StatusText = e.ChangeType == AudioDeviceChangeType.Removed
-                    ? $"⚠️ Kullanılan mikrofon çıkarıldı ({e.DeviceName}) — Session durdurulmalı"
+                    ? $"⚠️ Kullanılan mikrofon çıkarıldı ({e.DeviceName})"
                     : $"⚠️ Mikrofon durumu değişti: {e.DeviceName}";
 
                 _logger.LogWarning("Aktif session'u etkileyen cihaz değişikliği: {Change} - {Device}",
                     e.ChangeType, e.DeviceName);
             }
+        });
+    }
+
+    private void OnAudioCaptureError(object? sender, AudioCaptureErrorEventArgs e)
+    {
+        _ = RunOnUiAsync(() =>
+        {
+            ConnectionState = "🟡 Mikrofon yeniden bağlanıyor...";
+            StatusText = $"🟡 {e.Message}";
+            _logger.LogWarning("Audio capture error UI'a iletildi: {Message}", e.Message);
         });
     }
 
@@ -394,6 +411,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _transcriptManager.TranslationCompleted -= OnTranslationCompleted;
         _transcriptManager.StateChanged -= OnStateChanged;
         _transcriptManager.AudioDeviceChanged -= OnAudioDeviceChanged;
+        _transcriptManager.AudioCaptureError -= OnAudioCaptureError;
     }
 }
 
