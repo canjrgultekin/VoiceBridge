@@ -32,6 +32,13 @@ public sealed class AudioLevelEventArgs : EventArgs
 public sealed class TranscriptReceivedEventArgs : EventArgs
 {
     public required TranscriptEntry Entry { get; init; }
+
+    /// <summary>
+    /// True ise bu yeni bir entry değil, mevcut bir entry'nin (aynı Id'li)
+    /// smart-merge sonucunda güncellenmiş halidir. UI yeni satır eklemek yerine
+    /// mevcut ViewModel'i Id ile bulup içeriğini güncellemelidir.
+    /// </summary>
+    public bool IsUpdate { get; init; }
 }
 
 public sealed class SpeechRecognitionErrorEventArgs : EventArgs

@@ -3,11 +3,11 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:sys="clr-namespace:System;assembly=mscorlib"
         Title="VoiceBridge — Ayarlar"
-        Height="780" Width="620"
+        Height="560" Width="620"
         Background="{StaticResource BgBrush}"
         WindowStartupLocation="CenterOwner"
         ResizeMode="CanResize"
-        MinHeight="560" MinWidth="560">
+        MinHeight="480" MinWidth="560">
 
     <Window.Resources>
         <x:Array x:Key="DeepgramModels" Type="{x:Type sys:String}">
@@ -127,122 +127,6 @@
                         <TextBlock Text="Otomatik çeviri" FontSize="13"
                                    Foreground="{StaticResource TextPrimaryBrush}"/>
                     </CheckBox>
-                </StackPanel>
-
-                <!-- Audio Filtering başlık -->
-                <Border BorderBrush="{StaticResource SurfaceLightBrush}" BorderThickness="0,1,0,0" Margin="0,0,0,14"/>
-                <TextBlock Text="🎙️  Ses Filtreleme (Diarization &amp; Gürültü)" FontSize="14" FontWeight="Bold"
-                           Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,6"/>
-                <TextBlock TextWrapping="Wrap" FontSize="10" Margin="0,0,0,12"
-                           Foreground="{StaticResource TextSecondaryBrush}">
-                    Ortamda TV, müzik, uzak konuşmalar varsa yanlış transcript oluşmasını ve konuşmacıların karışmasını engeller.
-                    Silero VAD lokal ONNX modeliyle çalışır, hiçbir dış bağlantı yoktur.
-                </TextBlock>
-
-                <!-- VAD -->
-                <StackPanel Margin="0,0,0,14">
-                    <CheckBox IsChecked="{Binding EnableVad}" Margin="0,0,0,6">
-                        <TextBlock Text="Silero VAD ile ses aktivitesi tespiti" FontSize="13"
-                                   Foreground="{StaticResource TextPrimaryBrush}"/>
-                    </CheckBox>
-
-                    <Grid Margin="0,6,0,0" IsEnabled="{Binding EnableVad}">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="150"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="60"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="Eşik (Threshold)" FontSize="12"
-                                   VerticalAlignment="Center"
-                                   Foreground="{StaticResource TextSecondaryBrush}"/>
-                        <Slider Grid.Column="1" Minimum="0.1" Maximum="0.9"
-                                Value="{Binding VadThreshold, Mode=TwoWay}"
-                                TickFrequency="0.05" IsSnapToTickEnabled="True"
-                                VerticalAlignment="Center" Margin="8,0"/>
-                        <TextBlock Grid.Column="2" Text="{Binding VadThreshold, StringFormat=F2}"
-                                   FontSize="12" VerticalAlignment="Center"
-                                   HorizontalAlignment="Right"
-                                   Foreground="{StaticResource TextPrimaryBrush}"/>
-                    </Grid>
-
-                    <Grid Margin="0,8,0,0" IsEnabled="{Binding EnableVad}">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="150"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="60"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="Hangover (ms)" FontSize="12"
-                                   VerticalAlignment="Center"
-                                   Foreground="{StaticResource TextSecondaryBrush}"/>
-                        <Slider Grid.Column="1" Minimum="100" Maximum="1500"
-                                Value="{Binding VadHangoverMs, Mode=TwoWay}"
-                                TickFrequency="50" IsSnapToTickEnabled="True"
-                                VerticalAlignment="Center" Margin="8,0"/>
-                        <TextBlock Grid.Column="2" Text="{Binding VadHangoverMs}"
-                                   FontSize="12" VerticalAlignment="Center"
-                                   HorizontalAlignment="Right"
-                                   Foreground="{StaticResource TextPrimaryBrush}"/>
-                    </Grid>
-
-                    <TextBlock TextWrapping="Wrap" FontSize="10" Margin="0,6,0,0"
-                               Foreground="{StaticResource TextSecondaryBrush}">
-                        Düşük eşik = daha hassas (gürültüyü de konuşma sayabilir). Yüksek eşik = daha seçici.
-                        Hangover: konuşma bittikten sonra kaç ms daha "konuşma sürüyor" sayılsın.
-                    </TextBlock>
-                </StackPanel>
-
-                <!-- Noise Gate -->
-                <StackPanel Margin="0,0,0,14">
-                    <CheckBox IsChecked="{Binding EnableNoiseGate}" Margin="0,0,0,6">
-                        <TextBlock Text="RMS Noise Gate (enerji bazlı gürültü kesici)" FontSize="13"
-                                   Foreground="{StaticResource TextPrimaryBrush}"/>
-                    </CheckBox>
-
-                    <Grid Margin="0,6,0,0" IsEnabled="{Binding EnableNoiseGate}">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="150"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="60"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="Eşik (dBFS)" FontSize="12"
-                                   VerticalAlignment="Center"
-                                   Foreground="{StaticResource TextSecondaryBrush}"/>
-                        <Slider Grid.Column="1" Minimum="-70" Maximum="-20"
-                                Value="{Binding NoiseGateDbfs, Mode=TwoWay}"
-                                TickFrequency="1" IsSnapToTickEnabled="True"
-                                VerticalAlignment="Center" Margin="8,0"/>
-                        <TextBlock Grid.Column="2" Text="{Binding NoiseGateDbfs, StringFormat={}{0:F0} dB}"
-                                   FontSize="12" VerticalAlignment="Center"
-                                   HorizontalAlignment="Right"
-                                   Foreground="{StaticResource TextPrimaryBrush}"/>
-                    </Grid>
-
-                    <TextBlock TextWrapping="Wrap" FontSize="10" Margin="0,6,0,0"
-                               Foreground="{StaticResource TextSecondaryBrush}">
-                        -60 dB çok izin verici, -45 dB (default) orta, -30 dB agresif. Sessiz ortamlarda daha düşük değer seç.
-                    </TextBlock>
-                </StackPanel>
-
-                <!-- Min Word Count -->
-                <StackPanel Margin="0,0,0,16">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="80"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="Minimum kelime sayısı (final transcript)" FontSize="13"
-                                   VerticalAlignment="Center"
-                                   Foreground="{StaticResource TextPrimaryBrush}"/>
-                        <TextBox Grid.Column="1" Text="{Binding MinWordCount, UpdateSourceTrigger=PropertyChanged}"
-                                 FontSize="13" Padding="8,4" HorizontalContentAlignment="Center"
-                                 Background="{StaticResource SurfaceBrush}"
-                                 Foreground="{StaticResource TextPrimaryBrush}"
-                                 BorderBrush="{StaticResource SurfaceLightBrush}"/>
-                    </Grid>
-                    <TextBlock TextWrapping="Wrap" FontSize="10" Margin="0,4,0,0"
-                               Foreground="{StaticResource TextSecondaryBrush}">
-                        Bu sayının altındaki FINAL transcript'ler (genelde tek-iki kelimelik gürültü artefaktı) atılır. 0 = filtre yok.
-                    </TextBlock>
                 </StackPanel>
 
                 <!-- Info -->

@@ -18,7 +18,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISpeechRecognitionService, DeepgramStreamingService>();
         services.AddSingleton<ITranslationService, DeepLTranslationService>();
         services.AddSingleton<IApiKeyValidator, ApiKeyValidator>();
-        services.AddSingleton<IVoiceActivityDetector, SileroVadDetector>();
         services.AddSingleton<TranscriptManager>();
         services.AddSingleton<ITranscriptStore>(sp => sp.GetRequiredService<TranscriptManager>());
 

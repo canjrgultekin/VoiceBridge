@@ -16,12 +16,16 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
     private readonly IAudioCaptureService _audio;
     private readonly ITranslationService _translation;
     private readonly TranslationOptions _translationOptions;
+    private readonly TranscriptOptions _transcriptOptions;
     private readonly ILogger<TranscriptManager> _logger;
 
     private readonly List<TranscriptEntry> _entries = [];
     private readonly Dictionary<int, SpeakerInfo> _speakers = [];
     private readonly ConcurrentQueue<TranscriptEntry> _translationQueue = new();
     private readonly object _lock = new();
+
+    // Cümle sonu kabul edilen karakterler (smart merge için)
+    private static readonly char[] SentenceEndChars = ['.', '!', '?', '…', ':', ';'];
 
     private CancellationTokenSource? _sessionCts;
     private Task? _translationWorker;
@@ -54,6 +58,7 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
         _audio = audio;
         _translation = translation;
         _translationOptions = options.Value.Translation;
+        _transcriptOptions = options.Value.Transcript;
         _logger = logger;
 
         _stt.TranscriptReceived += OnTranscriptReceived;
@@ -121,10 +126,14 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
     {
         var entry = e.Entry;
 
+        TranscriptEntry? mergedEntry = null;
+        bool wasMerged = false;
+
         lock (_lock)
         {
             if (entry.IsInterim)
             {
+                // Interim: aynı speaker'ın mevcut interim entry'sini güncelle veya yeni ekle
                 var existing = _entries.FindLastIndex(x =>
                     x.IsInterim && x.SpeakerIndex == entry.SpeakerIndex);
 
@@ -135,28 +144,120 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
             }
             else
             {
+                // Final: önce o speaker'ın asılı interim'lerini temizle
                 _entries.RemoveAll(x =>
                     x.IsInterim && x.SpeakerIndex == entry.SpeakerIndex);
-                _entries.Add(entry);
+
+                // SMART MERGE: Son final entry ile birleştirilebilir mi?
+                var mergeTarget = TryFindMergeTarget(entry);
+                if (mergeTarget is not null)
+                {
+                    // Mevcut entry'yi mutate et
+                    var prevText = mergeTarget.OriginalText.TrimEnd();
+                    mergeTarget.OriginalText = string.IsNullOrEmpty(prevText)
+                        ? entry.OriginalText
+                        : prevText + " " + entry.OriginalText.TrimStart();
+                    mergeTarget.EndTime = entry.EndTime;
+                    mergeTarget.Confidence = Math.Min(mergeTarget.Confidence, entry.Confidence);
+                    mergeTarget.TranslatedText = string.Empty;
+                    mergeTarget.IsTranslationPending = true;
+                    mergeTarget.IsTranslationFailed = false;
+
+                    mergedEntry = mergeTarget;
+                    wasMerged = true;
+
+                    _logger.LogDebug("Smart merge: speaker {Speaker} ({Lang}) → birleştirildi: '{Text}'",
+                        mergeTarget.SpeakerIndex, mergeTarget.Language, mergeTarget.OriginalText);
+                }
+                else
+                {
+                    _entries.Add(entry);
+                }
             }
 
-            if (!_speakers.TryGetValue(entry.SpeakerIndex, out var speaker))
+            // Speaker istatistikleri (sadece yeni eklemelerde — merge'de çift saymayalım)
+            if (!wasMerged)
             {
-                speaker = new SpeakerInfo { Index = entry.SpeakerIndex };
-                _speakers[entry.SpeakerIndex] = speaker;
+                if (!_speakers.TryGetValue(entry.SpeakerIndex, out var speaker))
+                {
+                    speaker = new SpeakerInfo { Index = entry.SpeakerIndex };
+                    _speakers[entry.SpeakerIndex] = speaker;
+                }
+
+                speaker.UtteranceCount++;
+                speaker.TotalSpeakTime += TimeSpan.FromSeconds(entry.EndTime - entry.StartTime);
+
+                if (entry.Language != DetectedLanguage.Unknown)
+                    speaker.PrimaryLanguage = entry.Language;
             }
-
-            speaker.UtteranceCount++;
-            speaker.TotalSpeakTime += TimeSpan.FromSeconds(entry.EndTime - entry.StartTime);
-
-            if (entry.Language != DetectedLanguage.Unknown)
-                speaker.PrimaryLanguage = entry.Language;
+            else if (mergedEntry is not null)
+            {
+                // Merge durumunda speaker'ın TotalSpeakTime'ı yeni süreyi de kapsayacak şekilde güncelle
+                if (_speakers.TryGetValue(mergedEntry.SpeakerIndex, out var speaker))
+                {
+                    speaker.TotalSpeakTime += TimeSpan.FromSeconds(entry.EndTime - entry.StartTime);
+                }
+            }
         }
 
-        EntryAdded?.Invoke(this, e);
+        // Event firle: merge ise IsUpdate=true ve mergedEntry, değilse normal entry
+        var eventEntry = mergedEntry ?? entry;
+        EntryAdded?.Invoke(this, new TranscriptReceivedEventArgs
+        {
+            Entry = eventEntry,
+            IsUpdate = wasMerged
+        });
 
+        // Çeviri kuyruğuna ekle (merge'de mergedEntry, değilse yeni entry)
         if (!entry.IsInterim && _translationOptions.AutoTranslate)
-            _translationQueue.Enqueue(entry);
+            _translationQueue.Enqueue(eventEntry);
+    }
+
+    /// <summary>
+    /// Yeni gelen final entry için merge edilebilecek son final entry'yi bulur.
+    /// Koşullar: smart merge aktif, son final entry mevcut, aynı speaker, aynı dil,
+    /// gap eşiği içinde, ve önceki entry cümle sonu noktalaması ile bitmiyor.
+    /// </summary>
+    private TranscriptEntry? TryFindMergeTarget(TranscriptEntry incoming)
+    {
+        if (!_transcriptOptions.SmartMergeEnabled)
+            return null;
+
+        // Son final entry'yi bul
+        TranscriptEntry? lastFinal = null;
+        for (int i = _entries.Count - 1; i >= 0; i--)
+        {
+            if (!_entries[i].IsInterim)
+            {
+                lastFinal = _entries[i];
+                break;
+            }
+        }
+
+        if (lastFinal is null) return null;
+
+        // Aynı speaker olmalı
+        if (lastFinal.SpeakerIndex != incoming.SpeakerIndex) return null;
+
+        // Aynı dil olmalı (dual stream'de Türkçe/İngilizce karışmasın)
+        if (lastFinal.Language != incoming.Language) return null;
+
+        // Önceki entry cümle sonu noktalaması ile bitiyorsa MERGE ETME (gerçek cümle sonu)
+        var trimmed = lastFinal.OriginalText.TrimEnd();
+        if (trimmed.Length > 0 && Array.IndexOf(SentenceEndChars, trimmed[^1]) >= 0)
+            return null;
+
+        // Gap kontrolü: yeni entry'nin başlangıcı ile önceki entry'nin bitişi arasındaki süre
+        // (Deepgram timeline saniye cinsinden double)
+        var gapSeconds = incoming.StartTime - lastFinal.EndTime;
+        var gapMs = gapSeconds * 1000.0;
+
+        // Negatif gap (overlap) veya çok küçük gap → kesinlikle merge adayı
+        // Pozitif ama eşik altı → merge adayı
+        if (gapMs > _transcriptOptions.SmartMergeMaxGapMs)
+            return null;
+
+        return lastFinal;
     }
 
     private async Task RunTranslationWorkerAsync(CancellationToken ct)
@@ -178,7 +279,13 @@ public sealed class TranscriptManager : ITranscriptStore, IAsyncDisposable
 
                 if (batch.Count == 0) continue;
 
-                var requests = batch
+                // Aynı Id'den birden fazla varsa (merge re-translate sonucu) sonuncuyu al
+                var deduplicated = batch
+                    .GroupBy(e => e.Id)
+                    .Select(g => g.Last())
+                    .ToList();
+
+                var requests = deduplicated
                     .Select(e => new TranslationRequest(e.Id, e.OriginalText, e.Language))
                     .ToList();
 

@@ -330,7 +330,22 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         lock (_entriesLock)
         {
-            if (entry.IsInterim)
+            if (e.IsUpdate)
+            {
+                // Smart merge: mevcut Id'li ViewModel'i bul ve içeriğini güncelle.
+                // Yeni satır eklemek yerine son satırı genişletiyoruz.
+                var target = Entries.FirstOrDefault(x => x.Id == entry.Id);
+                if (target is not null)
+                {
+                    target.UpdateFrom(entry);
+                }
+                else
+                {
+                    // Edge case: hedef bulunamadı (UI senkron değil) → fallback yeni ekle
+                    Entries.Add(new TranscriptEntryViewModel(entry));
+                }
+            }
+            else if (entry.IsInterim)
             {
                 var existing = Entries.LastOrDefault(x =>
                     x.IsInterim && x.SpeakerIndex == entry.SpeakerIndex);
@@ -508,6 +523,10 @@ public partial class TranscriptEntryViewModel : ObservableObject
         OriginalText = entry.OriginalText;
         Language = entry.Language;
         LanguageFlag = entry.Language == DetectedLanguage.Turkish ? "🇹🇷" : "🇬🇧";
+        IsInterim = entry.IsInterim;
+        IsTranslationPending = entry.IsTranslationPending;
+        TranslatedText = entry.TranslatedText;
+        IsTranslationFailed = entry.IsTranslationFailed;
     }
 
     [RelayCommand]

@@ -24,14 +24,6 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private string _statusMessage = string.Empty;
     [ObservableProperty] private bool _hasChanges;
 
-    // Audio Filtering (diarization fix)
-    [ObservableProperty] private bool _enableVad = true;
-    [ObservableProperty] private float _vadThreshold = 0.5f;
-    [ObservableProperty] private int _vadHangoverMs = 400;
-    [ObservableProperty] private bool _enableNoiseGate = true;
-    [ObservableProperty] private double _noiseGateDbfs = -45.0;
-    [ObservableProperty] private int _minWordCount = 2;
-
     public SettingsViewModel(IOptions<VoiceBridgeOptions> options)
     {
         var opts = options.Value;
@@ -42,13 +34,6 @@ public partial class SettingsViewModel : ObservableObject
         _deepLModelType = opts.DeepL.ModelType;
         _deepLFormality = opts.DeepL.Formality;
         _autoTranslate = opts.Translation.AutoTranslate;
-
-        _enableVad = opts.AudioFiltering.EnableVad;
-        _vadThreshold = opts.AudioFiltering.VadThreshold;
-        _vadHangoverMs = opts.AudioFiltering.VadHangoverMs;
-        _enableNoiseGate = opts.AudioFiltering.EnableNoiseGate;
-        _noiseGateDbfs = opts.AudioFiltering.NoiseGateDbfs;
-        _minWordCount = opts.AudioFiltering.MinWordCount;
 
         LoadUserSettings();
     }
@@ -84,23 +69,6 @@ public partial class SettingsViewModel : ObservableObject
             if (tr?["AutoTranslate"] is not null)
                 AutoTranslate = tr["AutoTranslate"]!.GetValue<bool>();
 
-            var af = vb["AudioFiltering"];
-            if (af is not null)
-            {
-                if (af["EnableVad"] is not null)
-                    EnableVad = af["EnableVad"]!.GetValue<bool>();
-                if (af["VadThreshold"] is not null)
-                    VadThreshold = (float)af["VadThreshold"]!.GetValue<double>();
-                if (af["VadHangoverMs"] is not null)
-                    VadHangoverMs = af["VadHangoverMs"]!.GetValue<int>();
-                if (af["EnableNoiseGate"] is not null)
-                    EnableNoiseGate = af["EnableNoiseGate"]!.GetValue<bool>();
-                if (af["NoiseGateDbfs"] is not null)
-                    NoiseGateDbfs = af["NoiseGateDbfs"]!.GetValue<double>();
-                if (af["MinWordCount"] is not null)
-                    MinWordCount = af["MinWordCount"]!.GetValue<int>();
-            }
-
             HasChanges = false;
         }
         catch { }
@@ -113,12 +81,6 @@ public partial class SettingsViewModel : ObservableObject
     partial void OnDeepLModelTypeChanged(string value) => HasChanges = true;
     partial void OnDeepLFormalityChanged(string value) => HasChanges = true;
     partial void OnAutoTranslateChanged(bool value) => HasChanges = true;
-    partial void OnEnableVadChanged(bool value) => HasChanges = true;
-    partial void OnVadThresholdChanged(float value) => HasChanges = true;
-    partial void OnVadHangoverMsChanged(int value) => HasChanges = true;
-    partial void OnEnableNoiseGateChanged(bool value) => HasChanges = true;
-    partial void OnNoiseGateDbfsChanged(double value) => HasChanges = true;
-    partial void OnMinWordCountChanged(int value) => HasChanges = true;
 
     [RelayCommand]
     private void Save()
@@ -144,15 +106,6 @@ public partial class SettingsViewModel : ObservableObject
                     ["Translation"] = new JsonObject
                     {
                         ["AutoTranslate"] = AutoTranslate
-                    },
-                    ["AudioFiltering"] = new JsonObject
-                    {
-                        ["EnableVad"] = EnableVad,
-                        ["VadThreshold"] = VadThreshold,
-                        ["VadHangoverMs"] = VadHangoverMs,
-                        ["EnableNoiseGate"] = EnableNoiseGate,
-                        ["NoiseGateDbfs"] = NoiseGateDbfs,
-                        ["MinWordCount"] = MinWordCount
                     }
                 }
             };

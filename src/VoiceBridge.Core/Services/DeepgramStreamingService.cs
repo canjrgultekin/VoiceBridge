@@ -12,7 +12,6 @@ namespace VoiceBridge.Core.Services;
 
 public sealed class DeepgramStreamingService : ISpeechRecognitionService
 {
-    private readonly IOptionsMonitor<VoiceBridgeOptions> _optionsMonitor;
     private readonly DeepgramOptions _options;
     private readonly ILogger<DeepgramStreamingService> _logger;
 
@@ -44,11 +43,10 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
     }
 
     public DeepgramStreamingService(
-        IOptionsMonitor<VoiceBridgeOptions> optionsMonitor,
+        IOptions<VoiceBridgeOptions> options,
         ILogger<DeepgramStreamingService> logger)
     {
-        _optionsMonitor = optionsMonitor;
-        _options = optionsMonitor.CurrentValue.Deepgram;
+        _options = options.Value.Deepgram;
         _logger = logger;
 
         if (_options.Language is "tr-en" or "dual")
@@ -343,54 +341,61 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
             _ => DetectedLanguage.Unknown
         };
 
-        // Speaker selection: MAJORITY VOTE (önceki bug: sadece ilk word'ün speaker'ı alınıyordu)
+        // Speaker selection: tüm kelimeler üzerinde majority vote
+        // (önceki kod sadece ilk kelimenin speaker'ını alıyordu = bug)
         var speakerIndex = 0;
-        double startTime = 0, endTime = 0;
+        double startTime = 0;
+        double endTime = 0;
         int wordCount = 0;
 
         var words = best.GetProperty("words");
-        if (words.GetArrayLength() > 0)
+        int wordsLen = words.GetArrayLength();
+
+        if (wordsLen > 0)
         {
-            wordCount = words.GetArrayLength();
+            startTime = words[0].GetProperty("start").GetDouble();
+            endTime = words[wordsLen - 1].GetProperty("end").GetDouble();
+            wordCount = wordsLen;
 
-            var firstWord = words[0];
-            var lastWord = words[wordCount - 1];
-            startTime = firstWord.GetProperty("start").GetDouble();
-            endTime = lastWord.GetProperty("end").GetDouble();
-
-            // Her kelimenin speaker'ını say, çoğunluk kazanır
-            var speakerVotes = new Dictionary<int, int>();
-            foreach (var word in words.EnumerateArray())
+            // Speaker majority vote: words array'inde en sık geçen speaker
+            Dictionary<int, int>? speakerCounts = null;
+            for (int i = 0; i < wordsLen; i++)
             {
-                if (word.TryGetProperty("speaker", out var speakerProp))
+                if (words[i].TryGetProperty("speaker", out var sp))
                 {
-                    int sp = speakerProp.GetInt32();
-                    speakerVotes[sp] = speakerVotes.GetValueOrDefault(sp, 0) + 1;
+                    int s = sp.GetInt32();
+                    speakerCounts ??= new Dictionary<int, int>(capacity: 4);
+                    speakerCounts[s] = speakerCounts.TryGetValue(s, out var c) ? c + 1 : 1;
                 }
             }
 
-            if (speakerVotes.Count > 0)
+            if (speakerCounts is { Count: > 0 })
             {
-                // En çok oyu alan speaker; eşitlik varsa en küçük index (deterministik)
-                int maxVotes = speakerVotes.Values.Max();
-                speakerIndex = speakerVotes
-                    .Where(kv => kv.Value == maxVotes)
-                    .Min(kv => kv.Key);
+                int bestCount = -1;
+                foreach (var kv in speakerCounts)
+                {
+                    if (kv.Value > bestCount)
+                    {
+                        bestCount = kv.Value;
+                        speakerIndex = kv.Key;
+                    }
+                }
             }
         }
-
-        // Minimum kelime sayısı filtresi: sadece FINAL transcript'ler için
-        // Interim'ler zaten sürekli güncelleniyor, onları filtrelemeye gerek yok
-        if (isFinal)
+        else
         {
-            var filter = _optionsMonitor.CurrentValue.AudioFiltering;
-            if (wordCount > 0 && wordCount < filter.MinWordCount)
-            {
-                _logger.LogDebug(
-                    "Kısa transcript filtrelendi ({Words} kelime, eşik {Min}): {Text}",
-                    wordCount, filter.MinWordCount, transcript);
-                return;
-            }
+            // Words array boşsa transcript'teki boşluk sayısından yaklaşık word count
+            wordCount = transcript.Split(
+                (char[]?)null,
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Length;
+        }
+
+        // Minimum segment length filter: çok kısa final transcript'leri (gürültü artefaktı) at
+        if (isFinal && _options.MinWordCount > 0 && wordCount < _options.MinWordCount)
+        {
+            _logger.LogDebug("Kısa segment atıldı [{Lang}]: '{Text}' ({Count} kelime, min {Min})",
+                streamLanguage, transcript, wordCount, _options.MinWordCount);
+            return;
         }
 
         var entry = new TranscriptEntry
@@ -425,6 +430,12 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
         if (_options.Punctuate) sb.Append("&punctuate=true");
         if (_options.InterimResults) sb.Append("&interim_results=true");
         if (_options.Diarize) sb.Append("&diarize=true");
+
+        // Endpointing: interim → final geçişi için sessizlik eşiği (ms).
+        // Default 10ms çok agresif; 500ms ile yarım saniyelik mikro duraksamalar
+        // cümle sonu olarak yorumlanmaz, doğal duraklama olarak geçilir.
+        if (_options.Endpointing > 0)
+            sb.Append($"&endpointing={_options.Endpointing}");
 
         if (_options.UtteranceEnd)
             sb.Append($"&utterance_end_ms={_options.UtteranceEndMs}");

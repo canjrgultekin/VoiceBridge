@@ -8,7 +8,7 @@ public sealed class VoiceBridgeOptions
     public DeepLOptions DeepL { get; set; } = new();
     public AudioOptions Audio { get; set; } = new();
     public TranslationOptions Translation { get; set; } = new();
-    public AudioFilteringOptions AudioFiltering { get; set; } = new();
+    public TranscriptOptions Transcript { get; set; } = new();
 }
 
 public sealed class DeepgramOptions
@@ -32,7 +32,26 @@ public sealed class DeepgramOptions
     public int Channels { get; set; } = 1;
     public bool InterimResults { get; set; } = true;
     public bool UtteranceEnd { get; set; } = true;
-    public int UtteranceEndMs { get; set; } = 1000;
+
+    /// <summary>
+    /// Deepgram UtteranceEnd sinyali için sessizlik eşiği (ms). Bu süre boyunca konuşma
+    /// olmazsa Deepgram cümlenin bittiğini varsayar. Default 2000 — uzun paragraf okumalarda
+    /// doğal nefes/duraksama 1 saniyeyi rahatlıkla geçebildiği için 1000 çok agresifti.
+    /// </summary>
+    public int UtteranceEndMs { get; set; } = 2000;
+
+    /// <summary>
+    /// Deepgram interim → final geçişi için endpointing süresi (ms). Default 500.
+    /// Deepgram'ın kendi default'u 10ms (çok agresif). 500ms ile yarım saniyelik
+    /// duraksamaları cümle sonu olarak değil de doğal duraklama olarak değerlendirir.
+    /// </summary>
+    public int Endpointing { get; set; } = 500;
+
+    /// <summary>
+    /// Final transcript için minimum kelime sayısı. Bunun altındaki final transcript'ler
+    /// (genelde tek kelimelik gürültü artefaktı) atılır. 0 = filtre yok.
+    /// </summary>
+    public int MinWordCount { get; set; } = 2;
 }
 
 public sealed class DeepLOptions
@@ -57,48 +76,19 @@ public sealed class TranslationOptions
     public int MaxBatchSize { get; set; } = 5;
 }
 
-/// <summary>
-/// Ses ön-filtreleme ayarları: VAD, noise gate, speaker confidence.
-/// Ortamda TV/müzik/gürültü olduğunda yanlış transcript oluşmasını engeller
-/// ve speaker diarization kalitesini artırır.
-/// </summary>
-public sealed class AudioFilteringOptions
+public sealed class TranscriptOptions
 {
     /// <summary>
-    /// Silero VAD ile ses aktivitesi tespiti aktif mi?
-    /// Kapalıysa tüm ses Deepgram'e gönderilir (eski davranış).
+    /// Smart merge aktif mi? Aktifse art arda gelen final transcript'ler aynı speaker'dan
+    /// kısa süre içinde geliyorsa ve önceki cümle sonu noktalaması ile bitmiyorsa
+    /// birleştirilir. Bu sayede konuşmacının doğal duraksamaları cümleyi bölmez.
     /// </summary>
-    public bool EnableVad { get; set; } = true;
+    public bool SmartMergeEnabled { get; set; } = true;
 
     /// <summary>
-    /// Silero VAD speech probability eşiği (0.0 - 1.0).
-    /// Bu değerin altındaki chunk'lar gürültü sayılır ve Deepgram'e gönderilmez.
-    /// Düşük değer = daha hassas (gürültüyü bile konuşma sanır).
-    /// Yüksek değer = daha seçici (sadece net konuşmayı geçirir).
+    /// Smart merge için maksimum gap (ms). Önceki final entry'nin EndTime'ı ile yeni final
+    /// entry'nin StartTime'ı arasındaki fark bu değerden küçükse merge adayı olur.
+    /// Default 3000 — 3 saniyelik duraksamalar bile aynı cümle olarak kabul edilir.
     /// </summary>
-    public float VadThreshold { get; set; } = 0.5f;
-
-    /// <summary>
-    /// VAD kapandıktan sonra kaç ms boyunca konuşma devam ediyor sayılsın?
-    /// Kelime aralarındaki doğal duraksamaları yutmak için.
-    /// </summary>
-    public int VadHangoverMs { get; set; } = 400;
-
-    /// <summary>
-    /// RMS noise gate aktif mi? Silero VAD'e ek bir enerji filtresi.
-    /// </summary>
-    public bool EnableNoiseGate { get; set; } = true;
-
-    /// <summary>
-    /// Noise gate RMS eşiği (dBFS). Bu değerin altındaki sesler bastırılır.
-    /// -60 dBFS çok sessiz, -30 dBFS orta, -20 dBFS agresif.
-    /// Default: -45 dBFS (arka plan TV/uzak sesi keser ama yakın konuşmayı bozmaz).
-    /// </summary>
-    public double NoiseGateDbfs { get; set; } = -45.0;
-
-    /// <summary>
-    /// Bir transcript için minimum kelime sayısı. Bunun altındaki final transcript'ler
-    /// (genelde tek kelimelik gürültü artefaktı) dropped edilir.
-    /// </summary>
-    public int MinWordCount { get; set; } = 2;
+    public int SmartMergeMaxGapMs { get; set; } = 3000;
 }
