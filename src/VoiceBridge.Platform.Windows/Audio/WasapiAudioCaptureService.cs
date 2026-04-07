@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Wave;
+using VoiceBridge.Core.Configuration;
 using VoiceBridge.Core.Events;
 using VoiceBridge.Core.Interfaces;
 using VoiceBridge.Core.Models;
@@ -11,6 +13,8 @@ namespace VoiceBridge.Platform.Windows.Audio;
 public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotificationClient
 {
     private readonly ILogger<WasapiAudioCaptureService> _logger;
+    private readonly IVoiceActivityDetector _vad;
+    private readonly IOptionsMonitor<VoiceBridgeOptions> _optionsMonitor;
     private readonly MMDeviceEnumerator _enumerator;
     private readonly object _captureLock = new();
 
@@ -21,7 +25,7 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
     private string? _currentDeviceId;
     private bool _notificationsRegistered;
 
-    // Otomatik yeniden bağlanma için
+    // Otomatik yeniden bağlanma
     private AudioCaptureRequest? _lastRequest;
     private bool _shouldBeCapturing;
     private CancellationTokenSource? _retryCts;
@@ -36,6 +40,13 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
     private const int RetryIntervalMs = 2000;
     private const int MaxRetryAttempts = 60;
 
+    // VAD + noise gate state (sadece mikrofon için)
+    private readonly List<short> _vadAccumulator = new(capacity: 2048);
+    private bool _lastVadSpeechDecision;
+    private float _lastVadProbability;
+    private DateTime _lastSpeechTime = DateTime.MinValue;
+    private readonly object _vadLock = new();
+
     public event EventHandler<AudioDataEventArgs>? AudioDataAvailable;
     public event EventHandler<AudioCaptureErrorEventArgs>? CaptureError;
     public event EventHandler<AudioDeviceChangedEventArgs>? DeviceChanged;
@@ -44,9 +55,14 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
     public bool IsCapturing => _isCapturing;
     public string? CurrentDeviceId => _currentDeviceId;
 
-    public WasapiAudioCaptureService(ILogger<WasapiAudioCaptureService> logger)
+    public WasapiAudioCaptureService(
+        ILogger<WasapiAudioCaptureService> logger,
+        IVoiceActivityDetector vad,
+        IOptionsMonitor<VoiceBridgeOptions> optionsMonitor)
     {
         _logger = logger;
+        _vad = vad;
+        _optionsMonitor = optionsMonitor;
         _enumerator = new MMDeviceEnumerator();
 
         try
@@ -103,6 +119,16 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
         _targetFormat = new WaveFormat(request.SampleRate, request.BitsPerSample, request.Channels);
         _lastRequest = request;
         _shouldBeCapturing = true;
+
+        // VAD state'i sıfırla (yeni session)
+        lock (_vadLock)
+        {
+            _vadAccumulator.Clear();
+            _lastVadSpeechDecision = false;
+            _lastVadProbability = 0f;
+            _lastSpeechTime = DateTime.MinValue;
+        }
+        try { _vad.Reset(); } catch (Exception ex) { _logger.LogWarning(ex, "VAD reset hata"); }
 
         try
         {
@@ -171,19 +197,128 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
         try
         {
             var converted = ConvertAudio(e.Buffer, e.BytesRecorded, _micCapture!.WaveFormat);
-            AudioDataAvailable?.Invoke(this, new AudioDataEventArgs
-            {
-                Buffer = converted,
-                SourceType = AudioSourceType.Microphone
-            });
 
-            // Ses seviyesi (throttled)
+            // VU meter HER ZAMAN güncellensin (gate'ten geçmese bile görsel feedback kalır)
             EmitLevelIfDue(converted, AudioSourceType.Microphone, ref _lastMicLevelEmit);
+
+            // VAD + noise gate filtering (sadece mikrofon için)
+            if (ShouldForwardMicChunk(converted.Span))
+            {
+                AudioDataAvailable?.Invoke(this, new AudioDataEventArgs
+                {
+                    Buffer = converted,
+                    SourceType = AudioSourceType.Microphone
+                });
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Mikrofon veri dönüşüm hatası");
+            _logger.LogWarning(ex, "Mikrofon veri işleme hatası");
         }
+    }
+
+    /// <summary>
+    /// Mikrofon chunk'ının Deepgram'e gönderilip gönderilmeyeceğini belirler.
+    /// Üç katman: noise gate (RMS dBFS), Silero VAD (her 512 sample'da), hangover window.
+    /// </summary>
+    private bool ShouldForwardMicChunk(ReadOnlySpan<byte> pcm16Chunk)
+    {
+        var filter = _optionsMonitor.CurrentValue.AudioFiltering;
+
+        // Filtering tamamen kapalıysa fast path
+        if (!filter.EnableVad && !filter.EnableNoiseGate)
+            return true;
+
+        // Chunk'ı short array'e çevir
+        int sampleCount = pcm16Chunk.Length / 2;
+        if (sampleCount == 0) return false;
+
+        Span<short> shorts = sampleCount <= 4096 ? stackalloc short[sampleCount] : new short[sampleCount];
+        for (int i = 0; i < sampleCount; i++)
+            shorts[i] = (short)(pcm16Chunk[i * 2] | (pcm16Chunk[i * 2 + 1] << 8));
+
+        bool hangoverActive;
+        bool anyNewSpeech = false;
+
+        lock (_vadLock)
+        {
+            // Noise gate (RMS dBFS)
+            if (filter.EnableNoiseGate)
+            {
+                double rmsDbfs = CalculateRmsDbfs(shorts);
+                if (rmsDbfs < filter.NoiseGateDbfs)
+                {
+                    // Çok sessiz, ama hangover aktifse yine de geçir
+                    hangoverActive = IsHangoverActiveNoLock(filter.VadHangoverMs);
+                    return hangoverActive;
+                }
+            }
+
+            // Silero VAD
+            if (filter.EnableVad)
+            {
+                // Chunk'ı accumulator'a ekle
+                for (int i = 0; i < shorts.Length; i++)
+                    _vadAccumulator.Add(shorts[i]);
+
+                // Her 512 sample için VAD çalıştır
+                int frameSize = _vad.FrameSize;
+                while (_vadAccumulator.Count >= frameSize)
+                {
+                    var frameArr = new short[frameSize];
+                    for (int i = 0; i < frameSize; i++)
+                        frameArr[i] = _vadAccumulator[i];
+                    _vadAccumulator.RemoveRange(0, frameSize);
+
+                    float prob;
+                    try
+                    {
+                        prob = _vad.GetSpeechProbability(frameArr);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "VAD inference hatası, chunk geçiriliyor");
+                        return true; // VAD patlarsa güvenli taraf: geçir
+                    }
+
+                    _lastVadProbability = prob;
+                    bool isSpeech = prob >= filter.VadThreshold;
+                    _lastVadSpeechDecision = isSpeech;
+
+                    if (isSpeech)
+                    {
+                        _lastSpeechTime = DateTime.UtcNow;
+                        anyNewSpeech = true;
+                    }
+                }
+
+                // Karar: yeni speech var mı VEYA hangover window içindeyiz mi?
+                hangoverActive = anyNewSpeech || IsHangoverActiveNoLock(filter.VadHangoverMs);
+                return hangoverActive;
+            }
+        }
+
+        // VAD kapalı ama noise gate açık ve geçtik: forward
+        return true;
+    }
+
+    private bool IsHangoverActiveNoLock(int hangoverMs)
+    {
+        if (_lastSpeechTime == DateTime.MinValue) return false;
+        return (DateTime.UtcNow - _lastSpeechTime).TotalMilliseconds <= hangoverMs;
+    }
+
+    private static double CalculateRmsDbfs(ReadOnlySpan<short> samples)
+    {
+        if (samples.Length == 0) return -120.0;
+
+        double sumSquares = 0;
+        for (int i = 0; i < samples.Length; i++)
+            sumSquares += (double)samples[i] * samples[i];
+
+        double rms = Math.Sqrt(sumSquares / samples.Length) / 32768.0;
+        if (rms < 1e-7) return -120.0;
+        return 20.0 * Math.Log10(rms);
     }
 
     private void OnLoopbackDataAvailable(object? sender, WaveInEventArgs e)
@@ -192,18 +327,44 @@ public sealed class WasapiAudioCaptureService : IAudioCaptureService, IMMNotific
         try
         {
             var converted = ConvertAudio(e.Buffer, e.BytesRecorded, _loopbackCapture!.WaveFormat);
-            AudioDataAvailable?.Invoke(this, new AudioDataEventArgs
-            {
-                Buffer = converted,
-                SourceType = AudioSourceType.SystemAudio
-            });
 
+            // VU meter her zaman
             EmitLevelIfDue(converted, AudioSourceType.SystemAudio, ref _lastLoopbackLevelEmit);
+
+            // Loopback için sadece noise gate (VAD yok - Teams/Meet zaten temiz)
+            if (ShouldForwardLoopbackChunk(converted.Span))
+            {
+                AudioDataAvailable?.Invoke(this, new AudioDataEventArgs
+                {
+                    Buffer = converted,
+                    SourceType = AudioSourceType.SystemAudio
+                });
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Loopback veri dönüşüm hatası");
+            _logger.LogWarning(ex, "Loopback veri işleme hatası");
         }
+    }
+
+    private bool ShouldForwardLoopbackChunk(ReadOnlySpan<byte> pcm16Chunk)
+    {
+        var filter = _optionsMonitor.CurrentValue.AudioFiltering;
+
+        // Loopback için sadece noise gate uygula (VAD değil)
+        if (!filter.EnableNoiseGate)
+            return true;
+
+        int sampleCount = pcm16Chunk.Length / 2;
+        if (sampleCount == 0) return false;
+
+        Span<short> shorts = sampleCount <= 4096 ? stackalloc short[sampleCount] : new short[sampleCount];
+        for (int i = 0; i < sampleCount; i++)
+            shorts[i] = (short)(pcm16Chunk[i * 2] | (pcm16Chunk[i * 2 + 1] << 8));
+
+        double rmsDbfs = CalculateRmsDbfs(shorts);
+        // Loopback'te daha permissive bir eşik: gate eşiği - 10 dB
+        return rmsDbfs >= (filter.NoiseGateDbfs - 10.0);
     }
 
     private void EmitLevelIfDue(ReadOnlyMemory<byte> pcm16Buffer, AudioSourceType source, ref DateTime lastEmit)

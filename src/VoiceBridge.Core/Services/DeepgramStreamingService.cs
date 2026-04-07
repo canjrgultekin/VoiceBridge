@@ -12,6 +12,7 @@ namespace VoiceBridge.Core.Services;
 
 public sealed class DeepgramStreamingService : ISpeechRecognitionService
 {
+    private readonly IOptionsMonitor<VoiceBridgeOptions> _optionsMonitor;
     private readonly DeepgramOptions _options;
     private readonly ILogger<DeepgramStreamingService> _logger;
 
@@ -43,10 +44,11 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
     }
 
     public DeepgramStreamingService(
-        IOptions<VoiceBridgeOptions> options,
+        IOptionsMonitor<VoiceBridgeOptions> optionsMonitor,
         ILogger<DeepgramStreamingService> logger)
     {
-        _options = options.Value.Deepgram;
+        _optionsMonitor = optionsMonitor;
+        _options = optionsMonitor.CurrentValue.Deepgram;
         _logger = logger;
 
         if (_options.Language is "tr-en" or "dual")
@@ -341,20 +343,54 @@ public sealed class DeepgramStreamingService : ISpeechRecognitionService
             _ => DetectedLanguage.Unknown
         };
 
+        // Speaker selection: MAJORITY VOTE (önceki bug: sadece ilk word'ün speaker'ı alınıyordu)
         var speakerIndex = 0;
-        var words = best.GetProperty("words");
         double startTime = 0, endTime = 0;
+        int wordCount = 0;
 
+        var words = best.GetProperty("words");
         if (words.GetArrayLength() > 0)
         {
-            var firstWord = words[0];
-            var lastWord = words[words.GetArrayLength() - 1];
+            wordCount = words.GetArrayLength();
 
+            var firstWord = words[0];
+            var lastWord = words[wordCount - 1];
             startTime = firstWord.GetProperty("start").GetDouble();
             endTime = lastWord.GetProperty("end").GetDouble();
 
-            if (firstWord.TryGetProperty("speaker", out var speakerProp))
-                speakerIndex = speakerProp.GetInt32();
+            // Her kelimenin speaker'ını say, çoğunluk kazanır
+            var speakerVotes = new Dictionary<int, int>();
+            foreach (var word in words.EnumerateArray())
+            {
+                if (word.TryGetProperty("speaker", out var speakerProp))
+                {
+                    int sp = speakerProp.GetInt32();
+                    speakerVotes[sp] = speakerVotes.GetValueOrDefault(sp, 0) + 1;
+                }
+            }
+
+            if (speakerVotes.Count > 0)
+            {
+                // En çok oyu alan speaker; eşitlik varsa en küçük index (deterministik)
+                int maxVotes = speakerVotes.Values.Max();
+                speakerIndex = speakerVotes
+                    .Where(kv => kv.Value == maxVotes)
+                    .Min(kv => kv.Key);
+            }
+        }
+
+        // Minimum kelime sayısı filtresi: sadece FINAL transcript'ler için
+        // Interim'ler zaten sürekli güncelleniyor, onları filtrelemeye gerek yok
+        if (isFinal)
+        {
+            var filter = _optionsMonitor.CurrentValue.AudioFiltering;
+            if (wordCount > 0 && wordCount < filter.MinWordCount)
+            {
+                _logger.LogDebug(
+                    "Kısa transcript filtrelendi ({Words} kelime, eşik {Min}): {Text}",
+                    wordCount, filter.MinWordCount, transcript);
+                return;
+            }
         }
 
         var entry = new TranscriptEntry

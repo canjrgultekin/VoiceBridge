@@ -3,10 +3,11 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:sys="clr-namespace:System;assembly=mscorlib"
         Title="VoiceBridge — Ayarlar"
-        Height="640" Width="600"
+        Height="780" Width="620"
         Background="{StaticResource BgBrush}"
         WindowStartupLocation="CenterOwner"
-        ResizeMode="NoResize">
+        ResizeMode="CanResize"
+        MinHeight="560" MinWidth="560">
 
     <Window.Resources>
         <x:Array x:Key="DeepgramModels" Type="{x:Type sys:String}">
@@ -35,111 +36,234 @@
     <Grid Margin="24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="⚙️  API Ayarları" FontSize="20" FontWeight="Bold"
-                   Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,20"/>
+        <TextBlock Grid.Row="0" Text="⚙️  Ayarlar" FontSize="20" FontWeight="Bold"
+                   Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,16"/>
 
-        <!-- Deepgram -->
-        <StackPanel Grid.Row="1" Margin="0,0,0,16">
-            <TextBlock Text="Deepgram API Key" FontSize="13" FontWeight="SemiBold"
-                       Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
-            <TextBox Text="{Binding DeepgramApiKey, UpdateSourceTrigger=PropertyChanged}"
-                     FontSize="13" Padding="10,8"
-                     Background="{StaticResource SurfaceBrush}"
-                     Foreground="{StaticResource TextPrimaryBrush}"
-                     BorderBrush="{StaticResource SurfaceLightBrush}"/>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
+            <StackPanel>
 
-            <Grid Margin="0,10,0,0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
+                <!-- API Ayarları başlık -->
+                <TextBlock Text="API Ayarları" FontSize="14" FontWeight="Bold"
+                           Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,10"/>
 
-                <StackPanel Grid.Column="0" Margin="0,0,8,0">
-                    <TextBlock Text="Model" FontSize="13" FontWeight="SemiBold"
+                <!-- Deepgram -->
+                <StackPanel Margin="0,0,0,16">
+                    <TextBlock Text="Deepgram API Key" FontSize="13" FontWeight="SemiBold"
                                Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
-                    <ComboBox ItemsSource="{StaticResource DeepgramModels}"
-                              SelectedItem="{Binding DeepgramModel}"
-                              IsEditable="True"/>
+                    <TextBox Text="{Binding DeepgramApiKey, UpdateSourceTrigger=PropertyChanged}"
+                             FontSize="13" Padding="10,8"
+                             Background="{StaticResource SurfaceBrush}"
+                             Foreground="{StaticResource TextPrimaryBrush}"
+                             BorderBrush="{StaticResource SurfaceLightBrush}"/>
+
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                            <TextBlock Text="Model" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+                            <ComboBox ItemsSource="{StaticResource DeepgramModels}"
+                                      SelectedItem="{Binding DeepgramModel}"
+                                      IsEditable="True"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                            <TextBlock Text="Dil Modu" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+                            <ComboBox ItemsSource="{StaticResource LanguageModes}"
+                                      SelectedItem="{Binding DeepgramLanguage}"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock TextWrapping="Wrap" FontSize="10" Margin="0,4,0,0"
+                               Foreground="{StaticResource TextSecondaryBrush}">
+                        tr-en: Türkçe primary + İngilizce paralel | en-tr: İngilizce primary + Türkçe paralel | tr/en: tek dil | multi: Deepgram code-switching
+                    </TextBlock>
                 </StackPanel>
 
-                <StackPanel Grid.Column="1" Margin="8,0,0,0">
-                    <TextBlock Text="Dil Modu" FontSize="13" FontWeight="SemiBold"
+                <!-- DeepL -->
+                <StackPanel Margin="0,0,0,16">
+                    <TextBlock Text="DeepL API Key" FontSize="13" FontWeight="SemiBold"
                                Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
-                    <ComboBox ItemsSource="{StaticResource LanguageModes}"
-                              SelectedItem="{Binding DeepgramLanguage}"/>
-                </StackPanel>
-            </Grid>
+                    <TextBox Text="{Binding DeepLApiKey, UpdateSourceTrigger=PropertyChanged}"
+                             FontSize="13" Padding="10,8"
+                             Background="{StaticResource SurfaceBrush}"
+                             Foreground="{StaticResource TextPrimaryBrush}"
+                             BorderBrush="{StaticResource SurfaceLightBrush}"/>
 
-            <TextBlock TextWrapping="Wrap" FontSize="10" Margin="0,4,0,0"
-                       Foreground="{StaticResource TextSecondaryBrush}">
-                tr-en: Türkçe primary + İngilizce paralel | en-tr: İngilizce primary + Türkçe paralel | tr/en: tek dil | multi: Deepgram code-switching
-            </TextBlock>
-        </StackPanel>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
 
-        <!-- DeepL -->
-        <StackPanel Grid.Row="2" Margin="0,0,0,16">
-            <TextBlock Text="DeepL API Key" FontSize="13" FontWeight="SemiBold"
-                       Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
-            <TextBox Text="{Binding DeepLApiKey, UpdateSourceTrigger=PropertyChanged}"
-                     FontSize="13" Padding="10,8"
-                     Background="{StaticResource SurfaceBrush}"
-                     Foreground="{StaticResource TextPrimaryBrush}"
-                     BorderBrush="{StaticResource SurfaceLightBrush}"/>
+                        <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                            <TextBlock Text="Çeviri Modu" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+                            <ComboBox ItemsSource="{StaticResource DeepLModelTypes}"
+                                      SelectedItem="{Binding DeepLModelType}"/>
+                        </StackPanel>
 
-            <Grid Margin="0,10,0,0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-
-                <StackPanel Grid.Column="0" Margin="0,0,8,0">
-                    <TextBlock Text="Çeviri Modu" FontSize="13" FontWeight="SemiBold"
-                               Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
-                    <ComboBox ItemsSource="{StaticResource DeepLModelTypes}"
-                              SelectedItem="{Binding DeepLModelType}"/>
+                        <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                            <TextBlock Text="Formalite" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+                            <ComboBox ItemsSource="{StaticResource Formalities}"
+                                      SelectedItem="{Binding DeepLFormality}"/>
+                        </StackPanel>
+                    </Grid>
                 </StackPanel>
 
-                <StackPanel Grid.Column="1" Margin="8,0,0,0">
-                    <TextBlock Text="Formalite" FontSize="13" FontWeight="SemiBold"
-                               Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
-                    <ComboBox ItemsSource="{StaticResource Formalities}"
-                              SelectedItem="{Binding DeepLFormality}"/>
+                <!-- Translation -->
+                <StackPanel Margin="0,0,0,20">
+                    <CheckBox IsChecked="{Binding AutoTranslate}" Margin="0,0,0,4">
+                        <TextBlock Text="Otomatik çeviri" FontSize="13"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                    </CheckBox>
                 </StackPanel>
-            </Grid>
-        </StackPanel>
 
-        <!-- Translation -->
-        <StackPanel Grid.Row="3" Margin="0,0,0,16">
-            <CheckBox IsChecked="{Binding AutoTranslate}" Margin="0,0,0,4">
-                <TextBlock Text="Otomatik çeviri" FontSize="13"
-                           Foreground="{StaticResource TextPrimaryBrush}"/>
-            </CheckBox>
-        </StackPanel>
+                <!-- Audio Filtering başlık -->
+                <Border BorderBrush="{StaticResource SurfaceLightBrush}" BorderThickness="0,1,0,0" Margin="0,0,0,14"/>
+                <TextBlock Text="🎙️  Ses Filtreleme (Diarization &amp; Gürültü)" FontSize="14" FontWeight="Bold"
+                           Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,6"/>
+                <TextBlock TextWrapping="Wrap" FontSize="10" Margin="0,0,0,12"
+                           Foreground="{StaticResource TextSecondaryBrush}">
+                    Ortamda TV, müzik, uzak konuşmalar varsa yanlış transcript oluşmasını ve konuşmacıların karışmasını engeller.
+                    Silero VAD lokal ONNX modeliyle çalışır, hiçbir dış bağlantı yoktur.
+                </TextBlock>
 
-        <!-- Info -->
-        <TextBlock Grid.Row="4" TextWrapping="Wrap" FontSize="11"
-                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,12">
-            API key'leriniz yerel olarak appsettings.user.json dosyasında saklanır.
-            Deepgram: deepgram.com/signup (ücretsiz $200 kredi).
-            DeepL: deepl.com/pro-api (ayda 500K karakter ücretsiz).
-        </TextBlock>
+                <!-- VAD -->
+                <StackPanel Margin="0,0,0,14">
+                    <CheckBox IsChecked="{Binding EnableVad}" Margin="0,0,0,6">
+                        <TextBlock Text="Silero VAD ile ses aktivitesi tespiti" FontSize="13"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                    </CheckBox>
+
+                    <Grid Margin="0,6,0,0" IsEnabled="{Binding EnableVad}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="60"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Eşik (Threshold)" FontSize="12"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                        <Slider Grid.Column="1" Minimum="0.1" Maximum="0.9"
+                                Value="{Binding VadThreshold, Mode=TwoWay}"
+                                TickFrequency="0.05" IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center" Margin="8,0"/>
+                        <TextBlock Grid.Column="2" Text="{Binding VadThreshold, StringFormat=F2}"
+                                   FontSize="12" VerticalAlignment="Center"
+                                   HorizontalAlignment="Right"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                    </Grid>
+
+                    <Grid Margin="0,8,0,0" IsEnabled="{Binding EnableVad}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="60"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Hangover (ms)" FontSize="12"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                        <Slider Grid.Column="1" Minimum="100" Maximum="1500"
+                                Value="{Binding VadHangoverMs, Mode=TwoWay}"
+                                TickFrequency="50" IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center" Margin="8,0"/>
+                        <TextBlock Grid.Column="2" Text="{Binding VadHangoverMs}"
+                                   FontSize="12" VerticalAlignment="Center"
+                                   HorizontalAlignment="Right"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                    </Grid>
+
+                    <TextBlock TextWrapping="Wrap" FontSize="10" Margin="0,6,0,0"
+                               Foreground="{StaticResource TextSecondaryBrush}">
+                        Düşük eşik = daha hassas (gürültüyü de konuşma sayabilir). Yüksek eşik = daha seçici.
+                        Hangover: konuşma bittikten sonra kaç ms daha "konuşma sürüyor" sayılsın.
+                    </TextBlock>
+                </StackPanel>
+
+                <!-- Noise Gate -->
+                <StackPanel Margin="0,0,0,14">
+                    <CheckBox IsChecked="{Binding EnableNoiseGate}" Margin="0,0,0,6">
+                        <TextBlock Text="RMS Noise Gate (enerji bazlı gürültü kesici)" FontSize="13"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                    </CheckBox>
+
+                    <Grid Margin="0,6,0,0" IsEnabled="{Binding EnableNoiseGate}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="60"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Eşik (dBFS)" FontSize="12"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                        <Slider Grid.Column="1" Minimum="-70" Maximum="-20"
+                                Value="{Binding NoiseGateDbfs, Mode=TwoWay}"
+                                TickFrequency="1" IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center" Margin="8,0"/>
+                        <TextBlock Grid.Column="2" Text="{Binding NoiseGateDbfs, StringFormat={}{0:F0} dB}"
+                                   FontSize="12" VerticalAlignment="Center"
+                                   HorizontalAlignment="Right"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                    </Grid>
+
+                    <TextBlock TextWrapping="Wrap" FontSize="10" Margin="0,6,0,0"
+                               Foreground="{StaticResource TextSecondaryBrush}">
+                        -60 dB çok izin verici, -45 dB (default) orta, -30 dB agresif. Sessiz ortamlarda daha düşük değer seç.
+                    </TextBlock>
+                </StackPanel>
+
+                <!-- Min Word Count -->
+                <StackPanel Margin="0,0,0,16">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="80"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Minimum kelime sayısı (final transcript)" FontSize="13"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                        <TextBox Grid.Column="1" Text="{Binding MinWordCount, UpdateSourceTrigger=PropertyChanged}"
+                                 FontSize="13" Padding="8,4" HorizontalContentAlignment="Center"
+                                 Background="{StaticResource SurfaceBrush}"
+                                 Foreground="{StaticResource TextPrimaryBrush}"
+                                 BorderBrush="{StaticResource SurfaceLightBrush}"/>
+                    </Grid>
+                    <TextBlock TextWrapping="Wrap" FontSize="10" Margin="0,4,0,0"
+                               Foreground="{StaticResource TextSecondaryBrush}">
+                        Bu sayının altındaki FINAL transcript'ler (genelde tek-iki kelimelik gürültü artefaktı) atılır. 0 = filtre yok.
+                    </TextBlock>
+                </StackPanel>
+
+                <!-- Info -->
+                <Border BorderBrush="{StaticResource SurfaceLightBrush}" BorderThickness="0,1,0,0" Margin="0,6,0,12"/>
+                <TextBlock TextWrapping="Wrap" FontSize="11"
+                           Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6">
+                    API key'leriniz yerel olarak appsettings.user.json dosyasında saklanır.
+                    Deepgram: deepgram.com/signup (ücretsiz $200 kredi).
+                    DeepL: deepl.com/pro-api (ayda 500K karakter ücretsiz).
+                </TextBlock>
+
+            </StackPanel>
+        </ScrollViewer>
 
         <!-- Status -->
-        <TextBlock Grid.Row="6" Text="{Binding StatusMessage}" FontSize="12"
+        <TextBlock Grid.Row="2" Text="{Binding StatusMessage}" FontSize="12"
                    Foreground="{StaticResource WarningBrush}" TextWrapping="Wrap"
-                   VerticalAlignment="Bottom" Margin="0,0,0,12"/>
+                   Margin="0,10,0,10"/>
 
         <!-- Buttons -->
-        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="Kaydet" Command="{Binding SaveCommand}"
                     Style="{StaticResource PrimaryButton}" Margin="0,0,10,0"/>
             <Button Content="Kapat" Click="OnCloseClick"
